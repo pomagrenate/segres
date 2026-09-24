@@ -4,66 +4,95 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, Dict, Any
 import albumentations as A
+
+from .preprocess_config import PreprocessConfig, CanonicalConfig, GeometricConfig, AppearanceConfig
 
 
 class BasePreprocessor:
     """Base class for image preprocessing."""
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Preprocess image and return processed image and optional valid mask."""
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        """Preprocess image and return processed image, valid mask, and metadata."""
         raise NotImplementedError
 
 
 class Normalize01(BasePreprocessor):
-    """Normalize image to [0, 1] range using percentile clipping."""
+    """Normalize image to [0, 1] range using percentile clipping (appearance transform)."""
     
     def __init__(self, percentiles: Tuple[float, float] = (1.0, 99.0)):
         self.percentiles = percentiles
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
         lo, hi = np.percentile(img, self.percentiles)
         denom = max(float(hi - lo), 1e-6)
         normalized = np.clip((img - lo) / denom, 0.0, 1.0).astype(np.float32)
-        return normalized, None
+        meta = {'normalization': 'percentile', 'percentiles': self.percentiles}
+        return normalized, None, meta
+
+
+class NormalizeMinMax(BasePreprocessor):
+    """Min-max normalization to [0, 1] range (appearance transform)."""
+    
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        min_val = img.min()
+        max_val = img.max()
+        denom = max(float(max_val - min_val), 1e-6)
+        normalized = ((img - min_val) / denom).astype(np.float32)
+        meta = {'normalization': 'minmax', 'min': float(min_val), 'max': float(max_val)}
+        return normalized, None, meta
+
+
+class NormalizeZScore(BasePreprocessor):
+    """Z-score normalization (mean=0, std=1) (appearance transform)."""
+    
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        mean = img.mean()
+        std = img.std()
+        denom = max(float(std), 1e-6)
+        normalized = ((img - mean) / denom).astype(np.float32)
+        meta = {'normalization': 'zscore', 'mean': float(mean), 'std': float(std)}
+        return normalized, None, meta
 
 
 class CLAHE(BasePreprocessor):
-    """Contrast Limited Adaptive Histogram Equalization."""
+    """Contrast Limited Adaptive Histogram Equalization (appearance transform)."""
     
     def __init__(self, clip_limit: float = 2.5, tile_grid_size: Tuple[int, int] = (8, 8)):
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
         u8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
         clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
         enhanced = clahe.apply(u8).astype(np.float32) / 255.0
-        return enhanced, None
+        meta = {'clahe': True, 'clip_limit': self.clip_limit, 'tile_grid_size': self.tile_grid_size}
+        return enhanced, None, meta
 
 
 class Resize(BasePreprocessor):
-    """Resize image to target size."""
+    """Resize image to target size (geometric transform)."""
     
     def __init__(self, size: Tuple[int, int] = (1024, 1024), interpolation: int = cv2.INTER_LINEAR):
         self.size = size
         self.interpolation = interpolation
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
         resized = cv2.resize(img, self.size, interpolation=self.interpolation)
-        return resized, None
+        meta = {'resize': True, 'target_size': self.size, 'original_shape': img.shape[:2]}
+        return resized, None, meta
 
 
 class PadToSize(BasePreprocessor):
-    """Pad image to target size while maintaining aspect ratio."""
+    """Pad image to target size while maintaining aspect ratio (geometric transform)."""
     
     def __init__(self, size: Tuple[int, int] = (1024, 1024), mode: str = 'constant', value: float = 0.0):
         self.size = size
         self.mode = mode
         self.value = value
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
         h, w = img.shape[-2:]
         target_h, target_w = self.size
         
@@ -82,7 +111,8 @@ class PadToSize(BasePreprocessor):
         if pad_w > 0:
             valid_mask[..., -pad_w:, :] = 0
         
-        return padded, valid_mask
+        meta = {'pad': True, 'target_size': self.size, 'padding': (pad_h, pad_w)}
+        return padded, valid_mask, meta
 
 
 class LetterBox(BasePreprocessor):
@@ -198,7 +228,7 @@ class LetterBox(BasePreprocessor):
 
 
 class LetterBoxMask(BasePreprocessor):
-    """Resize and pad mask to target size using INTER_NEAREST interpolation.
+    """Resize and pad mask to target size using INTER_NEAREST interpolation (geometric transform).
     
     Critical for segmentation: masks must use nearest-neighbor interpolation to avoid
     introducing fractional values at boundaries (e.g., 0.15, 0.65) which corrupt
@@ -334,8 +364,53 @@ class ComposePreprocess:
         return img, valid_mask, meta
 
 
+def build_preprocessor_from_config(config: PreprocessConfig) -> ComposePreprocess:
+    """Build preprocessing pipeline from configuration.
+    
+    Args:
+        config: PreprocessConfig with canonical, geometric, and appearance settings
+    
+    Returns:
+        ComposePreprocess pipeline
+    """
+    transforms = []
+    
+    # Appearance transforms (user-controlled)
+    if config.appearance.enabled:
+        if config.appearance.normalize_percentile:
+            transforms.append(Normalize01(percentiles=config.appearance.normalize_percentiles))
+        elif config.appearance.normalize_minmax:
+            transforms.append(NormalizeMinMax())
+        elif config.appearance.normalize_zscore:
+            transforms.append(NormalizeZScore())
+        
+        if config.appearance.clahe:
+            transforms.append(CLAHE(
+                clip_limit=config.appearance.clahe_clip_limit,
+                tile_grid_size=config.appearance.clahe_tile_grid_size,
+            ))
+    
+    # Geometric transforms (user-controlled)
+    if config.geometric.enabled:
+        if config.geometric.letterbox and config.geometric.target_size:
+            transforms.append(LetterBox(
+                new_shape=config.geometric.target_size,
+                auto=config.geometric.auto,
+                scaleup=config.geometric.scaleup,
+                center=config.geometric.center,
+                stride=config.geometric.stride,
+                padding_value=0.0,
+            ))
+        elif config.geometric.resize and config.geometric.target_size:
+            transforms.append(Resize(size=config.geometric.target_size))
+    
+    return ComposePreprocess(transforms)
+
+
 def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = False) -> ComposePreprocess:
     """Get standard training preprocessing pipeline with LetterBox.
+    
+    DEPRECATED: Use build_preprocessor_from_config with PreprocessConfig.standard_training()
     
     Args:
         img_size: Target image size (height, width)
@@ -351,6 +426,8 @@ def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bo
 def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = True) -> ComposePreprocess:
     """Get validation preprocessing pipeline with LetterBox (no scaleup for better mAP).
     
+    DEPRECATED: Use build_preprocessor_from_config with PreprocessConfig.standard_validation()
+    
     Args:
         img_size: Target image size (height, width)
         auto: If True, use minimum rectangle with mod 32 alignment (more efficient, default)
@@ -364,6 +441,8 @@ def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: 
 
 def get_inference_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = True) -> ComposePreprocess:
     """Get inference preprocessing pipeline with LetterBox.
+    
+    DEPRECATED: Use build_preprocessor_from_config with PreprocessConfig.standard_validation()
     
     Args:
         img_size: Target image size (height, width)

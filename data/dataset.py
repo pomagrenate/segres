@@ -12,7 +12,8 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .augment import Compose, get_training_augmentation, get_validation_augmentation
-from .preprocess import ComposePreprocess, get_training_preprocessor, get_validation_preprocessor, get_mask_preprocessor
+from .preprocess import ComposePreprocess, get_training_preprocessor, get_validation_preprocessor, get_mask_preprocessor, build_preprocessor_from_config
+from .preprocess_config import PreprocessConfig
 
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)
@@ -40,6 +41,7 @@ class SegmentationDataset(Dataset):
         mask_dir: Optional[str] = None,
         transform: Optional[Callable] = None,
         auto: bool = False,  # Use minimum rectangle with mod 32 alignment
+        preprocess_config: Optional[PreprocessConfig] = None,  # Explicit preprocessing config
     ) -> None:
         super().__init__()
         self.data_root = Path(data_root)
@@ -57,12 +59,24 @@ class SegmentationDataset(Dataset):
         else:
             self.augmentation = get_validation_augmentation()
         
-        # Use auto=True for validation/inference for efficiency (rectangular inference)
-        auto_mode = auto if self.split != 'train' else False
-        self.preprocessor = get_training_preprocessor(img_size, auto=auto_mode) if self.split == 'train' else get_validation_preprocessor(img_size, auto=auto_mode)
-        
-        # Separate mask preprocessor with INTER_NEAREST interpolation
-        self.mask_preprocessor = get_mask_preprocessor(img_size, auto=auto_mode, scaleup=(self.split == 'train'))
+        # Use explicit config if provided, otherwise use legacy defaults
+        if preprocess_config is not None:
+            self.preprocessor = build_preprocessor_from_config(preprocess_config)
+            # For mask preprocessor, use geometric settings from config
+            if preprocess_config.geometric.letterbox and preprocess_config.geometric.target_size:
+                self.mask_preprocessor = get_mask_preprocessor(
+                    img_size=preprocess_config.geometric.target_size,
+                    auto=preprocess_config.geometric.auto,
+                    scaleup=preprocess_config.geometric.scaleup,
+                )
+            else:
+                # No geometric transforms for masks
+                self.mask_preprocessor = None
+        else:
+            # Legacy behavior for backward compatibility
+            auto_mode = auto if self.split != 'train' else False
+            self.preprocessor = get_training_preprocessor(img_size, auto=auto_mode) if self.split == 'train' else get_validation_preprocessor(img_size, auto=auto_mode)
+            self.mask_preprocessor = get_mask_preprocessor(img_size, auto=auto_mode, scaleup=(self.split == 'train'))
         
         # Resolve paths
         self.image_dir = self._resolve_image_dir()
@@ -409,8 +423,11 @@ class SegmentationDataset(Dataset):
                 mask = np.zeros(img.shape[-2:], dtype=np.float32)
             
             # Apply mask preprocessing with INTER_NEAREST (critical for segmentation)
-            mask_processed, _, mask_meta = self.mask_preprocessor(mask)
-            mask = mask_processed.squeeze() if mask_processed.ndim == 3 else mask_processed
+            if self.mask_preprocessor is not None:
+                mask_processed, _, mask_meta = self.mask_preprocessor(mask)
+                mask = mask_processed.squeeze() if mask_processed.ndim == 3 else mask_processed
+                if mask_meta:
+                    sample['meta'].update({f'mask_{k}': v for k, v in mask_meta.items()})
             
             # Apply augmentation (after preprocessing)
             if self.augment:
@@ -420,9 +437,6 @@ class SegmentationDataset(Dataset):
             
             sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask)).float().unsqueeze(0)
             sample['has_object'] = bool(mask.sum() > 0)
-            # Merge mask metadata with image metadata
-            if mask_meta:
-                sample['meta'].update({f'mask_{k}': v for k, v in mask_meta.items()})
         else:
             sample['mask'] = None
             sample['has_object'] = False
