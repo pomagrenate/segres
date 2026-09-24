@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -23,7 +26,7 @@ class BaseTrainer:
     """
     Base trainer class for segmentation models.
 
-    Handles training loop, validation, checkpointing, and distributed training.
+    Handles training loop, validation, checkpointing, visualization, and distributed training.
     """
 
     def __init__(
@@ -83,6 +86,15 @@ class BaseTrainer:
             self.device = torch.device(f"cuda:{self.local_rank}")
             dist.init_process_group(backend="nccl", init_method="env://")
 
+        # Metric histories for Ultralytics-style results.png
+        self.history: Dict[str, List[float]] = {
+            "train_loss": [],
+            "val_loss": [],
+            "iou": [],
+            "dice": [],
+            "lr": [],
+        }
+
         # Initialize components in dependency order
         self._setup_directories()
         self._setup_model()
@@ -99,6 +111,7 @@ class BaseTrainer:
         """Create checkpoint directories."""
         if self.rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            (self.checkpoint_dir / "val_visualizations").mkdir(parents=True, exist_ok=True)
 
     def _setup_model(self):
         """Initialize model."""
@@ -239,7 +252,6 @@ class BaseTrainer:
                 save_dir=str(self.checkpoint_dir / "val_visualizations"),
                 dataloader=self.val_loader,
             )
-            # Explicitly sync both names for backwards compatibility
             self.validator.dataloader = self.val_loader
             self.validator.val_loader = self.val_loader
         else:
@@ -346,7 +358,7 @@ class BaseTrainer:
 
     @torch.no_grad()
     def validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """Validate the model and return loss and metrics."""
+        """Validate the model, compute metrics, and save visualizations."""
         if self.val_loader is None:
             return 0.0, {}
 
@@ -359,24 +371,29 @@ class BaseTrainer:
 
         if self.validator is not None:
             self.validator.model = eval_model
-            # Always ensure dataloader is bound
             if self.validator.dataloader is None:
                 self.validator.dataloader = self.val_loader
+
+            # 1. Compute validation metrics
             metrics = self.validator.validate()
             val_loss = metrics.get("loss", 0.0)
+
+            # 2. Save sample visualizations for the epoch (Ultralytics-style)
+            if self.rank == 0:
+                epoch_vis_dir = self.checkpoint_dir / "val_visualizations" / f"epoch_{epoch + 1}"
+                self.validator.save_dir = epoch_vis_dir
+                self.validator.save_visualizations(num_samples=4)
+
             return val_loss, metrics
 
+        # Fallback if no validator instance
         val_loss = 0.0
         val_batches = len(self.val_loader)
 
         for batch in self.val_loader:
-            images = batch["image"].to(self.device, non_blocking=True)
-            valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
-            masks = batch["mask"].to(self.device, non_blocking=True)
-
-            images = self._ensure_4d_tensor(images)
-            valid_masks = self._ensure_4d_tensor(valid_masks)
-            masks = self._ensure_4d_tensor(masks)
+            images = self._ensure_4d_tensor(batch["image"].to(self.device, non_blocking=True))
+            valid_masks = self._ensure_4d_tensor(batch["valid_mask"].to(self.device, non_blocking=True))
+            masks = self._ensure_4d_tensor(batch["mask"].to(self.device, non_blocking=True))
 
             preds = eval_model(images)
             l_val, _ = self.criterion(preds, masks, valid_masks, epoch)
@@ -390,6 +407,55 @@ class BaseTrainer:
             val_loss = loss_tensor.item()
 
         return val_loss, {}
+
+    def _plot_results(self):
+        """Plot Ultralytics-style training & validation curves to results.png."""
+        if self.rank != 0 or len(self.history["train_loss"]) == 0:
+            return
+
+        epochs = range(1, len(self.history["train_loss"]) + 1)
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+        # 1. Losses
+        axes[0, 0].plot(epochs, self.history["train_loss"], "b-", label="Train Loss")
+        if any(self.history["val_loss"]):
+            axes[0, 0].plot(epochs, self.history["val_loss"], "r-", label="Val Loss")
+        axes[0, 0].set_title("Loss Curves")
+        axes[0, 0].set_xlabel("Epoch")
+        axes[0, 0].set_ylabel("Loss")
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, linestyle="--", alpha=0.5)
+
+        # 2. IoU
+        if any(self.history["iou"]):
+            axes[0, 1].plot(epochs, self.history["iou"], "g-", label="Validation IoU")
+            axes[0, 1].set_title("Validation IoU")
+            axes[0, 1].set_xlabel("Epoch")
+            axes[0, 1].set_ylabel("IoU")
+            axes[0, 1].legend()
+            axes[0, 1].grid(True, linestyle="--", alpha=0.5)
+
+        # 3. Dice
+        if any(self.history["dice"]):
+            axes[1, 0].plot(epochs, self.history["dice"], "m-", label="Validation Dice")
+            axes[1, 0].set_title("Validation Dice")
+            axes[1, 0].set_xlabel("Epoch")
+            axes[1, 0].set_ylabel("Dice")
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, linestyle="--", alpha=0.5)
+
+        # 4. Learning Rate
+        axes[1, 1].plot(epochs, self.history["lr"], "k-", label="Learning Rate")
+        axes[1, 1].set_title("Learning Rate")
+        axes[1, 1].set_xlabel("Epoch")
+        axes[1, 1].set_ylabel("LR")
+        axes[1, 1].set_yscale("log")
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, linestyle="--", alpha=0.5)
+
+        plt.tight_layout()
+        plt.savefig(self.checkpoint_dir / "results.png", dpi=150)
+        plt.close(fig)
 
     def save_checkpoint(self, epoch: int, loss: float, is_best: bool = False):
         """Save checkpoint."""
@@ -433,7 +499,7 @@ class BaseTrainer:
             )
 
     def train(self):
-        """Main training loop with validation at each epoch."""
+        """Main training loop with validation, visualization, and metric curves."""
         for epoch in range(self.start_epoch, self.epochs):
             train_loss = self.train_epoch(epoch)
             val_loss, metrics = self.validate(epoch)
@@ -442,7 +508,18 @@ class BaseTrainer:
             self.scheduler.step(eval_loss)
             lr_now = self.optimizer.param_groups[0]["lr"]
 
+            # Record metrics history
             if self.rank == 0:
+                self.history["train_loss"].append(train_loss)
+                self.history["val_loss"].append(val_loss)
+                self.history["iou"].append(metrics.get("iou", 0.0))
+                self.history["dice"].append(metrics.get("dice", 0.0))
+                self.history["lr"].append(lr_now)
+
+                # Generate/update results.png
+                self._plot_results()
+
+                # Print progress
                 if self.val_loader is not None and metrics:
                     iou = metrics.get("iou", 0.0)
                     dice = metrics.get("dice", 0.0)
