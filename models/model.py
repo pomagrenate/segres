@@ -50,7 +50,13 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                         c2 = args[0]
                 args = [c1, c2, *args[1:]]
             elif m is Upsample:
-                args = [f, *args]
+                # Upsample args: [scale_factor, mode] -> Upsample(scale_factor=..., mode=...)
+                if len(args) >= 2:
+                    args = [None, args[0], args[1]]  # size=None, scale_factor=args[0], mode=args[1]
+                elif len(args) == 1:
+                    args = [None, args[0], 'nearest']  # size=None, scale_factor=args[0], mode='nearest'
+                else:
+                    args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
             else:
@@ -85,7 +91,13 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                 c2 = args[0] if args else c1
                 args = [c1, c2, *args[1:]]
             elif m is Upsample:
-                args = [f, *args]
+                # Upsample args: [scale_factor, mode] -> Upsample(scale_factor=..., mode=...)
+                if len(args) >= 2:
+                    args = [None, args[0], args[1]]  # size=None, scale_factor=args[0], mode=args[1]
+                elif len(args) == 1:
+                    args = [None, args[0], 'nearest']  # size=None, scale_factor=args[0], mode='nearest'
+                else:
+                    args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
             else:
@@ -116,7 +128,13 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                 c2 = args[0] if args else c1
                 args = [c1, c2, *args[1:]]
             elif m is Upsample:
-                args = [f, *args]
+                # Upsample args: [scale_factor, mode] -> Upsample(scale_factor=..., mode=...)
+                if len(args) >= 2:
+                    args = [None, args[0], args[1]]  # size=None, scale_factor=args[0], mode=args[1]
+                elif len(args) == 1:
+                    args = [None, args[0], 'nearest']  # size=None, scale_factor=args[0], mode='nearest'
+                else:
+                    args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
             elif m is nn.Conv2d:

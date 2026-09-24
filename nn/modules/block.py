@@ -80,7 +80,7 @@ class Upsample(nn.Module):
         self.mode = mode
 
     def forward(self, x):
-        return nn.functional.interpolate(x, size=self.size, scale_factor=self.scale_factor, mode=self.mode)
+        return nn.functional.interpolate(x, size=self.size, scale_factor=None if self.size else self.scale_factor, mode=self.mode)
 
 
 class Concat(nn.Module):
