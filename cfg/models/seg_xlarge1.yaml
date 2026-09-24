@@ -1,0 +1,43 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# Extra Large High-Resolution Segmentation Model Configuration
+# Maximum capacity architecture for highest accuracy
+
+nc: 1  # number of classes
+channels: 3  # input channels
+
+# Backbone - Extra Large feature extraction
+backbone:
+  # [from, n, module, args]
+  [-1, 1, Conv, [96, 3, 2]]      # 0: downsample
+  [-1, 1, Conv, [192, 3, 2]]     # 1: downsample (P2)
+  [-1, 1, Conv, [384, 3, 2]]     # 2: downsample (P3)
+  [-1, 1, Conv, [576, 3, 2]]     # 3: downsample (P4)
+  [-1, 1, Conv, [768, 3, 2]]     # 4: downsample (P5)
+  [-1, 1, SPPF, [768, 5]]        # 5: spatial pyramid pooling
+
+# Neck - Extra Large feature fusion (PANet-style)
+neck:
+  # Top-down pathway
+  [-1, 1, Upsample, [2, 'nearest']]           # 6: upsample P5
+  [[-1, 3], 1, Conv, [576, 1, 1]]            # 7: concat P5 + P4, reduce
+  [-1, 1, Upsample, [2, 'nearest']]           # 8: upsample
+  [[-1, 2], 1, Conv, [384, 1, 1]]            # 9: concat + P3, reduce
+  [-1, 1, Upsample, [2, 'nearest']]           # 10: upsample
+  [[-1, 1], 1, Conv, [192, 1, 1]]            # 11: concat + P2, reduce
+  
+  # Bottom-up pathway
+  [-1, 1, Conv, [192, 3, 2]]                  # 12: downsample
+  [[-1, 9], 1, Conv, [384, 1, 1]]            # 13: concat + P3_fused
+  [-1, 1, Conv, [384, 3, 2]]                  # 14: downsample
+  [[-1, 7], 1, Conv, [576, 1, 1]]            # 15: concat + P4_fused
+
+# Head - Extra Large segmentation head
+head:
+  # Feature refinement and upsampling to original resolution
+  [-1, 1, Conv, [64, 1, 1]]                   # 16: reduce channels
+  [-1, 1, Conv, [64, 3, 1]]                   # 17: refine features
+  [-1, 1, Upsample, [2, 'bilinear']]          # 18: upsample
+  [-1, 1, Conv, [64, 3, 1]]                   # 19: refine
+  [-1, 1, Upsample, [2, 'bilinear']]          # 20: upsample
+  [-1, 1, nn.Conv2d, [1, 1, 1]]              # 21: final mask output

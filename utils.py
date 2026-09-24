@@ -1,3 +1,5 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
 from __future__ import annotations
 
 import copy
@@ -10,6 +12,7 @@ import torch.nn as nn
 
 
 def binary_mask_to_rle(mask: np.ndarray) -> str:
+    """Convert binary mask to run-length encoding (RLE) format."""
     mask_flat = np.asfortranarray(mask.astype(bool)).flatten()
     if not np.any(mask_flat):
         return ""
@@ -25,6 +28,7 @@ def binary_mask_to_rle(mask: np.ndarray) -> str:
 
 
 def rle_to_binary_mask(rle_str: str, height: int, width: int) -> np.ndarray:
+    """Convert RLE string to binary mask."""
     if not rle_str or pd.isna(rle_str):
         return np.zeros((height, width), dtype=np.uint8)
 
@@ -40,20 +44,29 @@ def rle_to_binary_mask(rle_str: str, height: int, width: int) -> np.ndarray:
     return mask_flat.reshape((width, height), order="F").T
 
 
+def compute_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
+    """Compute Intersection over Union (IoU) for two binary masks."""
+    inter = np.logical_and(mask1, mask2).sum()
+    union = np.logical_or(mask1, mask2).sum()
+    return float(inter / (union + 1e-8))
+
+
+def compute_dice(mask1: np.ndarray, mask2: np.ndarray) -> float:
+    """Compute Dice coefficient for two binary masks."""
+    inter = (mask1 * mask2).sum()
+    return float((2.0 * inter) / (mask1.sum() + mask2.sum() + 1e-8))
+
+
 def compute_panoptic_quality(
     pred_masks: List[np.ndarray],
     gt_masks: List[np.ndarray],
     iou_threshold: float = 0.5,
 ) -> Dict[str, float]:
+    """Compute Panoptic Quality metric for instance segmentation."""
     if len(pred_masks) == 0 and len(gt_masks) == 0:
         return {"PQ": 1.0, "SQ": 1.0, "RQ": 1.0, "TP": 0, "FP": 0, "FN": 0}
     if len(pred_masks) == 0 or len(gt_masks) == 0:
         return {"PQ": 0.0, "SQ": 0.0, "RQ": 0.0, "TP": 0, "FP": len(pred_masks), "FN": len(gt_masks)}
-
-    def iou(m1: np.ndarray, m2: np.ndarray) -> float:
-        inter = np.logical_and(m1, m2).sum()
-        union = np.logical_or(m1, m2).sum()
-        return float(inter / (union + 1e-8))
 
     matched_gt = set()
     iou_sum = 0.0
@@ -65,7 +78,7 @@ def compute_panoptic_quality(
         for j, g in enumerate(gt_masks):
             if j in matched_gt:
                 continue
-            curr_iou = iou(p, g)
+            curr_iou = compute_iou(p, g)
             if curr_iou > best_iou:
                 best_iou = curr_iou
                 best_idx = j
@@ -91,6 +104,8 @@ def compute_panoptic_quality(
 
 
 class ModelEMA:
+    """Exponential Moving Average (EMA) of model weights."""
+    
     def __init__(self, model: nn.Module, decay: float = 0.9999, device: Optional[torch.device] = None):
         self.decay = decay
         self.device = device
@@ -103,6 +118,7 @@ class ModelEMA:
 
     @torch.no_grad()
     def update(self, model: nn.Module):
+        """Update shadow model with EMA."""
         d = self.decay
         for s_param, m_param in zip(self.shadow_model.parameters(), model.parameters()):
             s_param.data.mul_(d).add_(m_param.data.to(s_param.device), alpha=(1.0 - d))
@@ -111,12 +127,14 @@ class ModelEMA:
             s_buf.copy_(m_buf.to(s_buf.device))
 
     def state_dict(self) -> Dict[str, Any]:
+        """Get state dict for checkpointing."""
         return {
             "decay": self.decay,
             "shadow_state_dict": self.shadow_model.state_dict(),
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
+        """Load state dict from checkpoint."""
         self.decay = state_dict["decay"]
         self.shadow_model.load_state_dict(state_dict["shadow_state_dict"])
 
@@ -130,6 +148,7 @@ def save_checkpoint(
     ema_model: Optional[ModelEMA] = None,
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
 ):
+    """Save training checkpoint."""
     ckpt = {
         "epoch": epoch,
         "loss": loss,
@@ -141,6 +160,7 @@ def save_checkpoint(
     if scheduler is not None:
         ckpt["scheduler_state_dict"] = scheduler.state_dict()
 
+    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     torch.save(ckpt, filepath)
 
 
@@ -152,6 +172,7 @@ def load_checkpoint(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     device: str = "cpu",
 ) -> Dict[str, Any]:
+    """Load training checkpoint."""
     ckpt = torch.load(filepath, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
 
@@ -165,15 +186,16 @@ def load_checkpoint(
     return {"epoch": ckpt.get("epoch", 0), "loss": ckpt.get("loss", float("inf"))}
 
 
-def create_submission_csv(predictions: Dict[str, List[str]], output_path: str):
+def create_submission_csv(predictions: Dict[str, List[str]], output_path: str, id_prefix: str = "image"):
+    """Create submission CSV from predictions in RLE format."""
     rows = []
     for image_id, rle_list in predictions.items():
         if not rle_list:
-            rows.append({"filament_id": f"{image_id}_none", "segmentation_rle": ""})
+            rows.append({f"{id_prefix}_id": f"{image_id}_none", "segmentation_rle": ""})
             continue
         for i, rle_str in enumerate(rle_list):
             rows.append({
-                "filament_id": f"{image_id}_{i + 1}",
+                f"{id_prefix}_id": f"{image_id}_{i + 1}",
                 "segmentation_rle": rle_str,
             })
 

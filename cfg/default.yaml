@@ -1,0 +1,74 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# Default configuration for high-resolution segmentation framework
+
+# Model settings
+model:
+  cfg: "seg_medium.yaml"  # Model architecture YAML (nano, small, medium, large, xlarge)
+  in_channels: 3         # Input channels (1 for grayscale, 3 for RGB)
+  num_classes: 1         # Number of segmentation classes
+
+# Data settings
+data:
+  data_root: ""           # Path to dataset root
+  img_size: [1024, 1024] # Image size (height, width)
+  batch_size: 1           # Batch size
+  val_split: 0.1          # Validation split ratio
+  num_workers: 2          # Number of data loading workers
+  use_cache: true         # Use data caching
+
+# Training settings
+train:
+  epochs: 50              # Number of training epochs
+  lr: 0.0001              # Learning rate
+  weight_decay: 0.00001   # Weight decay
+  device: "cuda"          # Device to use (cuda/cpu)
+  use_amp: false          # Use automatic mixed precision
+  use_ema: false           # Use exponential moving average
+  ema_decay: 0.9999       # EMA decay rate
+  grad_clip: 2.0          # Gradient clipping value
+  save_interval: 5        # Save checkpoint every N epochs
+
+# Checkpoint settings
+checkpoint:
+  dir: "checkpoints"      # Checkpoint directory
+  resume: null            # Resume from checkpoint (path or "last")
+
+# Validation settings
+val:
+  batch_size: 1           # Validation batch size
+  save_dir: null          # Directory to save validation visualizations
+
+# Prediction settings
+predict:
+  threshold: 0.5          # Prediction threshold
+  min_area: 30            # Minimum component area
+  close_kernel: 3         # Morphological closing kernel size
+  output_dir: "predictions" # Output directory for predictions
+
+# Loss settings
+loss:
+  # Region loss (always active)
+  region:
+    type: dice_bce  # Options: bce, dice, focal, tversky, focal_tversky, dice_bce
+    weight: 1.0
+    dice_weight: 1.0
+    bce_weight: 1.0
+    bce_pos_weight: 1.0
+  
+  # Boundary loss (optional)
+  boundary:
+    enabled: false
+    type: boundary_bce  # Options: boundary_bce, boundary_dice, boundary_dist
+    weight: 0.2
+  
+  # Structure loss (optional, for thin structures)
+  structure:
+    enabled: false
+    type: cldice  # Options: cldice, skeleton
+    weight: 0.3
+    n_iter: 3
+  
+  # Deep supervision (optional)
+  deep_supervision: false
+  deep_supervision_weights: [0.4, 0.3, 0.2, 0.1]

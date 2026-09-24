@@ -5,4 +5,5 @@ pillow>=10.0
 pandas>=2.0
 matplotlib>=3.7
 tqdm>=4.65
+pyyaml>=6.0
 astropy>=5.3  # optional: only needed if you read .fits/.fit files

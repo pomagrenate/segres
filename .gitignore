@@ -1,7 +1,6 @@
 # Datasets & Caches
 MAGFiLO_1.0_Kaggle_2026/
 filament-segmentation-2026/
-/data/
 magfilo_hq_cache/
 *.npy
 *.npz
