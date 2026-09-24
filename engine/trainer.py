@@ -86,7 +86,7 @@ class BaseTrainer:
             self.device = torch.device(f"cuda:{self.local_rank}")
             dist.init_process_group(backend="nccl", init_method="env://")
 
-        # Metric histories for Ultralytics-style results.png
+        # Metric history for results.png
         self.history: Dict[str, List[float]] = {
             "train_loss": [],
             "val_loss": [],
@@ -95,7 +95,6 @@ class BaseTrainer:
             "lr": [],
         }
 
-        # Initialize components in dependency order
         self._setup_directories()
         self._setup_model()
         self._setup_optimizer()
@@ -132,24 +131,20 @@ class BaseTrainer:
             )
 
     def _setup_optimizer(self):
-        """Initialize optimizer."""
         raw_model = self.model.module if self.use_ddp else self.model
         self.optimizer = torch.optim.AdamW(
             raw_model.parameters(), lr=self.lr, weight_decay=self.weight_decay
         )
 
     def _setup_scheduler(self):
-        """Initialize learning rate scheduler."""
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-6
         )
 
     def _setup_loss(self):
-        """Initialize loss function."""
         self.criterion = CompositeSegmentationLoss()
 
     def _setup_data(self):
-        """Initialize data loaders."""
         train_dataset = SegmentationDataset(
             data_root=self.data_root,
             split="train",
@@ -224,7 +219,6 @@ class BaseTrainer:
         )
 
     def _setup_ema(self):
-        """Setup ModelEMA."""
         from utils import ModelEMA
 
         raw_model = self.model.module if self.use_ddp else self.model
@@ -235,7 +229,6 @@ class BaseTrainer:
         )
 
     def _setup_validator(self):
-        """Initialize validator for metrics computation."""
         if self.val_loader is not None and self.rank == 0:
             eval_model = (
                 self.ema.shadow_model
@@ -258,7 +251,6 @@ class BaseTrainer:
             self.validator = None
 
     def _setup_amp(self):
-        """Setup AMP."""
         self.scaler = (
             torch.amp.GradScaler("cuda")
             if (self.use_amp and self.device.type == "cuda")
@@ -266,7 +258,6 @@ class BaseTrainer:
         )
 
     def _load_checkpoint(self):
-        """Load checkpoint if resume is specified."""
         self.start_epoch = 0
         self.best_loss = float("inf")
 
@@ -293,7 +284,6 @@ class BaseTrainer:
 
     @staticmethod
     def _ensure_4d_tensor(x: torch.Tensor) -> torch.Tensor:
-        """Ensure input tensor has exactly 4 dimensions (B, C, H, W)."""
         if x.ndim == 2:
             return x.unsqueeze(0).unsqueeze(0)
         if x.ndim == 3:
@@ -301,7 +291,6 @@ class BaseTrainer:
         return x
 
     def train_epoch(self, epoch: int) -> float:
-        """Train for one epoch."""
         self.model.train()
         if self.use_ddp and hasattr(self.train_loader, "sampler") and self.train_loader.sampler is not None:
             self.train_loader.sampler.set_epoch(epoch)
@@ -309,20 +298,21 @@ class BaseTrainer:
         total_loss = 0.0
         n_batches = len(self.train_loader)
 
+        # Định dạng Header thông tin huấn luyện chuẩn Ultralytics
+        if self.rank == 0 and epoch == self.start_epoch:
+            print(f"\n{'Epoch':>10} {'GPU_mem':>10} {'total_loss':>12} {'bce_loss':>10} {'dice_loss':>10} {'cldice':>10}")
+
+        pbar_desc = f"{f'{epoch + 1}/{self.epochs}':>10}"
         iterator = (
-            tqdm(self.train_loader, desc=f"Epoch {epoch + 1}", leave=False)
+            tqdm(self.train_loader, desc=pbar_desc, leave=False, bar_format="{desc} {percentage:3.0f}%|{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
             if self.rank == 0
             else self.train_loader
         )
 
         for batch in iterator:
-            images = batch["image"].to(self.device, non_blocking=True)
-            valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
-            masks = batch["mask"].to(self.device, non_blocking=True)
-
-            images = self._ensure_4d_tensor(images)
-            valid_masks = self._ensure_4d_tensor(valid_masks)
-            masks = self._ensure_4d_tensor(masks)
+            images = self._ensure_4d_tensor(batch["image"].to(self.device, non_blocking=True))
+            valid_masks = self._ensure_4d_tensor(batch["valid_mask"].to(self.device, non_blocking=True))
+            masks = self._ensure_4d_tensor(batch["mask"].to(self.device, non_blocking=True))
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -331,7 +321,7 @@ class BaseTrainer:
                 enabled=(self.use_amp and self.device.type == "cuda"),
             ):
                 preds = self.model(images)
-                loss, _ = self.criterion(preds, masks, valid_masks, epoch)
+                loss, loss_parts = self.criterion(preds, masks, valid_masks, epoch)
 
             raw_model = self.model.module if self.use_ddp else self.model
 
@@ -351,14 +341,25 @@ class BaseTrainer:
 
             loss_val = loss.item()
             total_loss += loss_val
+
+            # Hiển thị VRAM và chi tiết từng loss thành phần trên tqdm
             if self.rank == 0:
-                iterator.set_postfix({"loss": f"{loss_val:.4f}"})
+                mem = f"{torch.cuda.memory_reserved() / 1E9:.2f}G" if torch.cuda.is_available() else "0G"
+                bce = float(loss_parts.get("bce", 0.0))
+                dice = float(loss_parts.get("dice", 0.0))
+                cldice = float(loss_parts.get("cldice", 0.0))
+                iterator.set_postfix({
+                    "gpu": mem,
+                    "loss": f"{loss_val:.4f}",
+                    "bce": f"{bce:.3f}",
+                    "dice": f"{dice:.3f}",
+                    "cldice": f"{cldice:.3f}",
+                })
 
         return total_loss / max(n_batches, 1)
 
     @torch.no_grad()
     def validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """Validate the model, compute metrics, and save visualizations."""
         if self.val_loader is None:
             return 0.0, {}
 
@@ -374,49 +375,30 @@ class BaseTrainer:
             if self.validator.dataloader is None:
                 self.validator.dataloader = self.val_loader
 
-            # 1. Compute validation metrics
             metrics = self.validator.validate()
             val_loss = metrics.get("loss", 0.0)
 
-            # 2. Save sample visualizations for the epoch (Ultralytics-style)
+            # In bảng tổng kết và lưu ảnh trực quan
             if self.rank == 0:
+                self.validator.print_results(epoch=epoch + 1)
+                
                 epoch_vis_dir = self.checkpoint_dir / "val_visualizations" / f"epoch_{epoch + 1}"
                 self.validator.save_dir = epoch_vis_dir
                 self.validator.save_visualizations(num_samples=4)
+                print(f"Visualizations saved to: {epoch_vis_dir}")
 
             return val_loss, metrics
 
-        # Fallback if no validator instance
-        val_loss = 0.0
-        val_batches = len(self.val_loader)
-
-        for batch in self.val_loader:
-            images = self._ensure_4d_tensor(batch["image"].to(self.device, non_blocking=True))
-            valid_masks = self._ensure_4d_tensor(batch["valid_mask"].to(self.device, non_blocking=True))
-            masks = self._ensure_4d_tensor(batch["mask"].to(self.device, non_blocking=True))
-
-            preds = eval_model(images)
-            l_val, _ = self.criterion(preds, masks, valid_masks, epoch)
-            val_loss += l_val.item()
-
-        val_loss = val_loss / max(val_batches, 1)
-
-        if self.use_ddp:
-            loss_tensor = torch.tensor([val_loss], device=self.device)
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
-            val_loss = loss_tensor.item()
-
-        return val_loss, {}
+        return 0.0, {}
 
     def _plot_results(self):
-        """Plot Ultralytics-style training & validation curves to results.png."""
+        """Plot Ultralytics-style results.png curves."""
         if self.rank != 0 or len(self.history["train_loss"]) == 0:
             return
 
         epochs = range(1, len(self.history["train_loss"]) + 1)
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-        # 1. Losses
         axes[0, 0].plot(epochs, self.history["train_loss"], "b-", label="Train Loss")
         if any(self.history["val_loss"]):
             axes[0, 0].plot(epochs, self.history["val_loss"], "r-", label="Val Loss")
@@ -426,7 +408,6 @@ class BaseTrainer:
         axes[0, 0].legend()
         axes[0, 0].grid(True, linestyle="--", alpha=0.5)
 
-        # 2. IoU
         if any(self.history["iou"]):
             axes[0, 1].plot(epochs, self.history["iou"], "g-", label="Validation IoU")
             axes[0, 1].set_title("Validation IoU")
@@ -435,7 +416,6 @@ class BaseTrainer:
             axes[0, 1].legend()
             axes[0, 1].grid(True, linestyle="--", alpha=0.5)
 
-        # 3. Dice
         if any(self.history["dice"]):
             axes[1, 0].plot(epochs, self.history["dice"], "m-", label="Validation Dice")
             axes[1, 0].set_title("Validation Dice")
@@ -444,7 +424,6 @@ class BaseTrainer:
             axes[1, 0].legend()
             axes[1, 0].grid(True, linestyle="--", alpha=0.5)
 
-        # 4. Learning Rate
         axes[1, 1].plot(epochs, self.history["lr"], "k-", label="Learning Rate")
         axes[1, 1].set_title("Learning Rate")
         axes[1, 1].set_xlabel("Epoch")
@@ -458,7 +437,6 @@ class BaseTrainer:
         plt.close(fig)
 
     def save_checkpoint(self, epoch: int, loss: float, is_best: bool = False):
-        """Save checkpoint."""
         if self.rank != 0:
             return
 
@@ -499,7 +477,7 @@ class BaseTrainer:
             )
 
     def train(self):
-        """Main training loop with validation, visualization, and metric curves."""
+        """Main training loop."""
         for epoch in range(self.start_epoch, self.epochs):
             train_loss = self.train_epoch(epoch)
             val_loss, metrics = self.validate(epoch)
@@ -508,7 +486,6 @@ class BaseTrainer:
             self.scheduler.step(eval_loss)
             lr_now = self.optimizer.param_groups[0]["lr"]
 
-            # Record metrics history
             if self.rank == 0:
                 self.history["train_loss"].append(train_loss)
                 self.history["val_loss"].append(val_loss)
@@ -516,31 +493,7 @@ class BaseTrainer:
                 self.history["dice"].append(metrics.get("dice", 0.0))
                 self.history["lr"].append(lr_now)
 
-                # Generate/update results.png
                 self._plot_results()
-
-                # Print progress
-                if self.val_loader is not None and metrics:
-                    iou = metrics.get("iou", 0.0)
-                    dice = metrics.get("dice", 0.0)
-                    print(
-                        f"[Epoch {epoch + 1}/{self.epochs}] "
-                        f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-                        f"iou={iou:.4f} dice={dice:.4f} lr={lr_now:.2e}",
-                        flush=True,
-                    )
-                elif self.val_loader is not None:
-                    print(
-                        f"[Epoch {epoch + 1}/{self.epochs}] "
-                        f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} lr={lr_now:.2e}",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        f"[Epoch {epoch + 1}/{self.epochs}] "
-                        f"train_loss={train_loss:.4f} lr={lr_now:.2e}",
-                        flush=True,
-                    )
 
             is_best = eval_loss < self.best_loss
             if is_best:

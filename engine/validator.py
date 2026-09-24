@@ -49,12 +49,10 @@ class BaseValidator:
 
     @property
     def val_loader(self) -> Optional[DataLoader]:
-        """Alias for dataloader."""
         return self.dataloader
 
     @val_loader.setter
     def val_loader(self, loader: Optional[DataLoader]):
-        """Setter to allow assigning val_loader seamlessly."""
         self.dataloader = loader
     
     def setup_data(self, split: str = "val"):
@@ -65,7 +63,7 @@ class BaseValidator:
             img_size=self.img_size,
             augment=False,
             use_cache=True,
-            auto=True,  # Use rectangular inference for efficiency
+            auto=True,
         )
         
         self.dataloader = DataLoader(
@@ -80,7 +78,6 @@ class BaseValidator:
 
     @staticmethod
     def _ensure_4d_tensor(x: torch.Tensor) -> torch.Tensor:
-        """Ensure input tensor has exactly 4 dimensions (B, C, H, W)."""
         if x.ndim == 2:
             return x.unsqueeze(0).unsqueeze(0)
         if x.ndim == 3:
@@ -100,7 +97,11 @@ class BaseValidator:
         all_preds = []
         all_targets = []
         
-        for batch in tqdm(self.dataloader, desc="Validating", leave=False):
+        # Thanh tiến trình validation hiển thị rõ ràng
+        val_desc = f"{'Validating':>15}"
+        pbar = tqdm(self.dataloader, desc=val_desc, leave=False, bar_format="{desc}: {percentage:3.0f}%|{bar:20}{r_bar}")
+        
+        for batch in pbar:
             images = batch["image"].to(self.device, non_blocking=True)
             valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
             masks = batch["mask"].to(self.device, non_blocking=True)
@@ -109,19 +110,14 @@ class BaseValidator:
             valid_masks = self._ensure_4d_tensor(valid_masks)
             masks = self._ensure_4d_tensor(masks)
             
-            # Forward pass
             preds = self.model(images)
-            
-            # Compute loss
             loss, _ = self.criterion(preds, masks, valid_masks, 0)
             total_loss += loss.item()
             
-            # Store predictions and targets for metrics
             probs = torch.sigmoid(preds)
             all_preds.append(probs.cpu().numpy())
             all_targets.append(masks.cpu().numpy())
         
-        # Compute metrics
         avg_loss = total_loss / max(n_batches, 1)
         self.metrics = self._compute_metrics(all_preds, all_targets)
         self.metrics["loss"] = avg_loss
@@ -151,13 +147,22 @@ class BaseValidator:
             "accuracy": float(accuracy),
         }
     
-    def print_results(self):
-        """Print validation results."""
-        print("\nValidation Results:")
-        for metric, value in self.metrics.items():
-            print(f"  {metric}: {value:.4f}")
-        print()
-    
+    def print_results(self, epoch: Optional[int] = None):
+        """Print validation results in Ultralytics table format."""
+        ep_str = f"Epoch {epoch}" if epoch is not None else "Summary"
+        print(f"\n{'-'*75}")
+        print(f"{'Class / Stage':<20} {'Images':<10} {'Loss':<12} {'IoU':<12} {'Dice':<12} {'Acc':<10}")
+        print(f"{'-'*75}")
+        
+        num_images = len(self.dataloader.dataset) if self.dataloader is not None else 0
+        loss_val = self.metrics.get("loss", 0.0)
+        iou_val = self.metrics.get("iou", 0.0)
+        dice_val = self.metrics.get("dice", 0.0)
+        acc_val = self.metrics.get("accuracy", 0.0)
+        
+        print(f"{'all (Filament)':<20} {num_images:<10} {loss_val:<12.4f} {iou_val:<12.4f} {dice_val:<12.4f} {acc_val:<10.4f}")
+        print(f"{'-'*75}\n")
+
     def save_visualizations(self, num_samples: int = 4):
         """Save visualization of predictions."""
         if self.save_dir is None or self.dataloader is None:
@@ -172,13 +177,9 @@ class BaseValidator:
                 if samples_saved >= num_samples:
                     break
                 
-                images = batch["image"].to(self.device, non_blocking=True)
-                valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
-                masks = batch["mask"].to(self.device, non_blocking=True)
-
-                images = self._ensure_4d_tensor(images)
-                valid_masks = self._ensure_4d_tensor(valid_masks)
-                masks = self._ensure_4d_tensor(masks)
+                images = self._ensure_4d_tensor(batch["image"].to(self.device, non_blocking=True))
+                valid_masks = self._ensure_4d_tensor(batch["valid_mask"].to(self.device, non_blocking=True))
+                masks = self._ensure_4d_tensor(batch["mask"].to(self.device, non_blocking=True))
                 
                 preds = self.model(images)
                 probs = torch.sigmoid(preds)
@@ -196,40 +197,23 @@ class BaseValidator:
                     samples_saved += 1
     
     def _save_sample(self, img: np.ndarray, mask: np.ndarray, valid: np.ndarray, pred: np.ndarray, idx: int):
-        """Save a single sample visualization."""
         import matplotlib.pyplot as plt
         
         fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-        
-        # Image
-        if img.ndim == 3:
-            axes[0].imshow(img[0], cmap='gray')
-        else:
-            axes[0].imshow(img, cmap='gray')
-        axes[0].set_title("Image")
+        axes[0].imshow(img[0] if img.ndim == 3 else img, cmap='gray')
+        axes[0].set_title("Input Image")
         axes[0].axis('off')
         
-        # Ground truth
-        if mask.ndim == 3:
-            axes[1].imshow(mask[0], cmap='gray')
-        else:
-            axes[1].imshow(mask, cmap='gray')
-        axes[1].set_title("Ground Truth")
+        axes[1].imshow(mask[0] if mask.ndim == 3 else mask, cmap='gray')
+        axes[1].set_title(f"Ground Truth ({int(mask.sum())} px)")
         axes[1].axis('off')
         
-        # Prediction
-        if pred.ndim == 3:
-            axes[2].imshow(pred[0], cmap='gray')
-        else:
-            axes[2].imshow(pred, cmap='gray')
-        axes[2].set_title("Prediction")
+        bin_pred = (pred[0] if pred.ndim == 3 else pred) >= 0.5
+        axes[2].imshow(bin_pred, cmap='gray')
+        axes[2].set_title(f"Prediction ({int(bin_pred.sum())} px)")
         axes[2].axis('off')
         
-        # Valid mask
-        if valid.ndim == 3:
-            axes[3].imshow(valid[0], cmap='gray')
-        else:
-            axes[3].imshow(valid, cmap='gray')
+        axes[3].imshow(valid[0] if valid.ndim == 3 else valid, cmap='gray')
         axes[3].set_title("Valid Mask")
         axes[3].axis('off')
         
