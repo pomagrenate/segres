@@ -409,9 +409,12 @@ class SegmentationDataset(Dataset):
         img_path = self.image_files[idx]
         img, valid_mask, meta = self._get_processed_data(img_path)
         
+        # Convert image to tensor first
+        img_tensor = torch.from_numpy(np.ascontiguousarray(img)).float()
+        
         sample = {
-            'image': torch.from_numpy(np.ascontiguousarray(img)).float(),
-            'valid_mask': torch.from_numpy(np.ascontiguousarray(valid_mask)).float() if valid_mask is not None else torch.ones_like(img),
+            'image': img_tensor,
+            'valid_mask': torch.from_numpy(np.ascontiguousarray(valid_mask)).float() if valid_mask is not None else torch.ones_like(img_tensor),
             'image_id': img_path.stem,
             'meta': meta,  # Transform metadata for unpadding
         }
