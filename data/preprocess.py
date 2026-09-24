@@ -85,6 +85,96 @@ class PadToSize(BasePreprocessor):
         return padded, valid_mask
 
 
+class LetterBox(BasePreprocessor):
+    """Resize and pad image to target size while preserving aspect ratio (Ultralytics style).
+    
+    Handles cases where target size is larger or smaller than actual image size:
+    - If target > actual: scales up and pads (letterboxing)
+    - If target < actual: scales down and pads (letterboxing)
+    - Preserves aspect ratio
+    """
+    
+    def __init__(
+        self,
+        new_shape: Tuple[int, int] = (1024, 1024),
+        auto: bool = False,
+        scale_fill: bool = False,
+        scaleup: bool = True,
+        center: bool = True,
+        stride: int = 32,
+        padding_value: float = 0.0,
+        interpolation: int = cv2.INTER_LINEAR,
+    ):
+        self.new_shape = new_shape
+        self.auto = auto
+        self.scale_fill = scale_fill
+        self.scaleup = scaleup
+        self.stride = stride
+        self.center = center
+        self.padding_value = padding_value
+        self.interpolation = interpolation
+    
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        # Handle both (H, W) and (H, W, C) shapes
+        if img.ndim == 2:
+            img = img[..., None]
+        
+        shape = img.shape[:2]  # current shape [height, width]
+        new_shape = self.new_shape
+        
+        # Scale ratio (new / old)
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+        if not self.scaleup:  # only scale down, do not scale up (for better val mAP)
+            r = min(r, 1.0)
+        
+        # Compute padding
+        ratio = r, r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+        
+        if self.auto:  # minimum rectangle
+            dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)
+        elif self.scale_fill:  # stretch
+            dw, dh = 0.0, 0.0
+            new_unpad = (new_shape[1], new_shape[0])
+            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]
+        
+        if self.center:
+            dw /= 2  # divide padding into 2 sides
+            dh /= 2
+        
+        top, bottom = int(round(dh - 0.1)) if self.center else 0, int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)) if self.center else 0, int(round(dw + 0.1))
+        
+        # Resize
+        if shape[::-1] != new_unpad:
+            img = cv2.resize(img, new_unpad, interpolation=self.interpolation)
+        
+        # Pad
+        if img.ndim == 2:
+            img = img[..., None]
+        
+        h, w, c = img.shape
+        padded = cv2.copyMakeBorder(
+            img, top, bottom, left, right,
+            cv2.BORDER_CONSTANT,
+            value=(self.padding_value,) * c if c > 1 else self.padding_value
+        )
+        
+        # Create valid mask (1 for real image, 0 for padding)
+        valid_mask = np.ones((padded.shape[0], padded.shape[1]), dtype=np.float32)
+        if top > 0:
+            valid_mask[:top, :] = 0
+        if bottom > 0:
+            valid_mask[-bottom:, :] = 0
+        if left > 0:
+            valid_mask[:, :left] = 0
+        if right > 0:
+            valid_mask[:, -right:] = 0
+        
+        return padded, valid_mask
+
+
 class ComposePreprocess:
     """Compose multiple preprocessing steps."""
     
@@ -104,27 +194,27 @@ class ComposePreprocess:
 
 
 def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get standard training preprocessing pipeline."""
+    """Get standard training preprocessing pipeline with LetterBox."""
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        PadToSize(size=img_size, mode='constant', value=0.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, padding_value=0.0),
     ])
 
 
 def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get validation preprocessing pipeline."""
+    """Get validation preprocessing pipeline with LetterBox (no scaleup for better mAP)."""
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        PadToSize(size=img_size, mode='constant', value=0.0),
+        LetterBox(new_shape=img_size, scaleup=False, center=True, padding_value=0.0),
     ])
 
 
 def get_inference_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get inference preprocessing pipeline."""
+    """Get inference preprocessing pipeline with LetterBox."""
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        PadToSize(size=img_size, mode='constant', value=0.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, padding_value=0.0),
     ])
