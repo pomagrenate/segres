@@ -19,18 +19,21 @@ backbone:
 neck:
   # Top-down pathway
   - [-1, 1, Upsample, [2, 'nearest']]           # 5: upsample P4
-  - [[-1, 2], 1, Conv, [96, 1, 1]]              # 6: concat P4 + P3, reduce
-  - [-1, 1, Upsample, [2, 'nearest']]           # 7: upsample
-  - [[-1, 1], 1, Conv, [48, 1, 1]]              # 8: concat + P2, reduce
+  - [[-1, 2], 1, Concat, [1]]                   # 6: concat P4 + P3
+  - [-1, 1, Conv, [96, 1, 1]]                   # 7: reduce channels
+  - [-1, 1, Upsample, [2, 'nearest']]           # 8: upsample
+  - [[-1, 1], 1, Concat, [1]]                   # 9: concat + P2
+  - [-1, 1, Conv, [48, 1, 1]]                   # 10: reduce channels
   # Bottom-up pathway
-  - [-1, 1, Conv, [48, 3, 2]]                   # 9: downsample
-  - [[-1, 6], 1, Conv, [96, 1, 1]]              # 10: concat + P3_fused
+  - [-1, 1, Conv, [48, 3, 2]]                   # 11: downsample
+  - [[-1, 6], 1, Concat, [1]]                   # 12: concat + P3_fused
+  - [-1, 1, Conv, [96, 1, 1]]                   # 13: reduce channels
 
 # Head - Small segmentation head
 head:
   # Feature refinement and upsampling
-  - [-1, 1, Conv, [16, 1, 1]]                   # 11: reduce channels
-  - [-1, 1, Conv, [16, 3, 1]]                   # 12: refine features
-  - [-1, 1, Upsample, [2, 'bilinear']]          # 13: upsample
-  - [-1, 1, Upsample, [2, 'bilinear']]          # 14: upsample
-  - [-1, 1, nn.Conv2d, [1, 1, 1]]              # 15: final mask output
+  - [-1, 1, Conv, [16, 1, 1]]                   # 14: reduce channels
+  - [-1, 1, Conv, [16, 3, 1]]                   # 15: refine features
+  - [-1, 1, Upsample, [2, 'bilinear']]          # 16: upsample
+  - [-1, 1, Upsample, [2, 'bilinear']]          # 17: upsample
+  - [-1, 1, nn.Conv2d, [1, 1, 1]]              # 18: final mask output

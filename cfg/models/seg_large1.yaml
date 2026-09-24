@@ -20,23 +20,28 @@ backbone:
 neck:
   # Top-down pathway
   - [-1, 1, Upsample, [2, 'nearest']]           # 6: upsample P5
-  - [[-1, 3], 1, Conv, [384, 1, 1]]            # 7: concat P5 + P4, reduce
-  - [-1, 1, Upsample, [2, 'nearest']]           # 8: upsample
-  - [[-1, 2], 1, Conv, [256, 1, 1]]            # 9: concat + P3, reduce
-  - [-1, 1, Upsample, [2, 'nearest']]           # 10: upsample
-  - [[-1, 1], 1, Conv, [128, 1, 1]]            # 11: concat + P2, reduce
+  - [[-1, 3], 1, Concat, [1]]                   # 7: concat P5 + P4
+  - [-1, 1, Conv, [384, 1, 1]]                  # 8: reduce channels
+  - [-1, 1, Upsample, [2, 'nearest']]           # 9: upsample
+  - [[-1, 2], 1, Concat, [1]]                   # 10: concat + P3
+  - [-1, 1, Conv, [256, 1, 1]]                  # 11: reduce channels
+  - [-1, 1, Upsample, [2, 'nearest']]           # 12: upsample
+  - [[-1, 1], 1, Concat, [1]]                   # 13: concat + P2
+  - [-1, 1, Conv, [128, 1, 1]]                  # 14: reduce channels
   # Bottom-up pathway
-  - [-1, 1, Conv, [128, 3, 2]]                  # 12: downsample
-  - [[-1, 9], 1, Conv, [256, 1, 1]]            # 13: concat + P3_fused
-  - [-1, 1, Conv, [256, 3, 2]]                  # 14: downsample
-  - [[-1, 7], 1, Conv, [384, 1, 1]]            # 15: concat + P4_fused
+  - [-1, 1, Conv, [128, 3, 2]]                  # 15: downsample
+  - [[-1, 11], 1, Concat, [1]]                  # 16: concat + P3_fused
+  - [-1, 1, Conv, [256, 1, 1]]                  # 17: reduce channels
+  - [-1, 1, Conv, [256, 3, 2]]                  # 18: downsample
+  - [[-1, 8], 1, Concat, [1]]                    # 19: concat + P4_fused
+  - [-1, 1, Conv, [384, 1, 1]]                  # 20: reduce channels
 
 # Head - Large segmentation head
 head:
   # Feature refinement and upsampling to original resolution
-  - [-1, 1, Conv, [32, 1, 1]]                   # 16: reduce channels
-  - [-1, 1, Conv, [32, 3, 1]]                   # 17: refine features
-  - [-1, 1, Upsample, [2, 'bilinear']]          # 18: upsample
-  - [-1, 1, Conv, [32, 3, 1]]                   # 19: refine
-  - [-1, 1, Upsample, [2, 'bilinear']]          # 20: upsample
-  - [-1, 1, nn.Conv2d, [1, 1, 1]]              # 21: final mask output
+  - [-1, 1, Conv, [32, 1, 1]]                   # 21: reduce channels
+  - [-1, 1, Conv, [32, 3, 1]]                   # 22: refine features
+  - [-1, 1, Upsample, [2, 'bilinear']]          # 23: upsample
+  - [-1, 1, Conv, [32, 3, 1]]                   # 24: refine
+  - [-1, 1, Upsample, [2, 'bilinear']]          # 25: upsample
+  - [-1, 1, nn.Conv2d, [1, 1, 1]]              # 26: final mask output

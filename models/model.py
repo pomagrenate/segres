@@ -12,7 +12,7 @@ from copy import deepcopy
 from nn.modules import Conv, Bottleneck, C3k2, SPPF, Upsample, Concat
 
 
-def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequential, List[int]]:
+def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> nn.Sequential:
     """
     Parse a YOLO model.yaml dictionary into a PyTorch model.
     
@@ -23,10 +23,8 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
         
     Returns:
         model: PyTorch model
-        save: List of layer indices to save outputs from
     """
     layers = []
-    save = []
     c2 = ch[-1]  # output channels
     
     # Parse backbone
@@ -73,7 +71,6 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
             if i == 0:
                 ch = []
             ch.append(c2)
-            save.append(x if isinstance(x, int) else x[0] for x in (f,))
     
     # Parse neck
     if 'neck' in d:
@@ -181,16 +178,16 @@ class SegmentationModel(nn.Module):
         self.yaml['channels'] = ch  # override channels
         
         # Build model
-        self.model, self.save = parse_model(deepcopy(self.yaml), [ch], verbose=verbose)
+        self.model = parse_model(deepcopy(self.yaml), [ch], verbose=verbose)
         self.names = {i: f"{i}" for i in range(nc)}
         self.nc = nc
         
     def forward(self, x):
         """Forward pass."""
         y = []
-        for m in self.model:
+        for i, m in enumerate(self.model):
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
             x = m(x)
-            y.append(x if m.i in self.save else None)
-        return x[-1] if isinstance(x, list) else x
+            y.append(x)  # Always save output for layer connections
+        return x
