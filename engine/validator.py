@@ -1,13 +1,12 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
 from __future__ import annotations
 
 import cv2
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 from models import SegmentationModel
@@ -24,13 +23,14 @@ class BaseValidator:
     
     def __init__(
         self,
-        model: SegmentationModel,
+        model: nn.Module,
         data_root: str,
         img_size: tuple = (1024, 1024),
         batch_size: int = 1,
         device: str = "cuda",
         num_workers: int = 2,
         save_dir: Optional[str] = None,
+        dataloader: Optional[DataLoader] = None,
     ):
         self.model = model
         self.data_root = Path(data_root)
@@ -39,15 +39,26 @@ class BaseValidator:
         self.device = torch.device(device if (device == "cuda" and torch.cuda.is_available()) else "cpu")
         self.num_workers = num_workers
         self.save_dir = Path(save_dir) if save_dir else None
+        self.dataloader = dataloader
         
         self.model.to(self.device)
         self.model.eval()
         
         self.criterion = CompositeSegmentationLoss()
-        self.metrics = {}
+        self.metrics: Dict[str, float] = {}
+
+    @property
+    def val_loader(self) -> Optional[DataLoader]:
+        """Alias for dataloader."""
+        return self.dataloader
+
+    @val_loader.setter
+    def val_loader(self, loader: Optional[DataLoader]):
+        """Setter to allow assigning val_loader seamlessly."""
+        self.dataloader = loader
     
     def setup_data(self, split: str = "val"):
-        """Setup validation data loader."""
+        """Setup validation data loader if not already provided."""
         self.dataset = SegmentationDataset(
             data_root=self.data_root,
             split=split,
@@ -66,10 +77,22 @@ class BaseValidator:
             collate_fn=collate_fn,
             drop_last=False,
         )
+
+    @staticmethod
+    def _ensure_4d_tensor(x: torch.Tensor) -> torch.Tensor:
+        """Ensure input tensor has exactly 4 dimensions (B, C, H, W)."""
+        if x.ndim == 2:
+            return x.unsqueeze(0).unsqueeze(0)
+        if x.ndim == 3:
+            return x.unsqueeze(1)
+        return x
     
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
         """Run validation and return metrics."""
+        if self.dataloader is None:
+            self.setup_data(split="val")
+            
         self.model.eval()
         total_loss = 0.0
         n_batches = len(self.dataloader)
@@ -81,6 +104,10 @@ class BaseValidator:
             images = batch["image"].to(self.device, non_blocking=True)
             valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
             masks = batch["mask"].to(self.device, non_blocking=True)
+
+            images = self._ensure_4d_tensor(images)
+            valid_masks = self._ensure_4d_tensor(valid_masks)
+            masks = self._ensure_4d_tensor(masks)
             
             # Forward pass
             preds = self.model(images)
@@ -103,22 +130,19 @@ class BaseValidator:
     
     def _compute_metrics(self, preds: List[np.ndarray], targets: List[np.ndarray]) -> Dict[str, float]:
         """Compute segmentation metrics."""
-        # Concatenate all batches
+        if not preds or not targets:
+            return {"iou": 0.0, "dice": 0.0, "accuracy": 0.0}
+
         all_preds = np.concatenate(preds, axis=0)
         all_targets = np.concatenate(targets, axis=0)
         
-        # Binary predictions
         binary_preds = (all_preds > 0.5).astype(np.float32)
         
-        # Compute IoU
         intersection = (binary_preds * all_targets).sum()
         union = binary_preds.sum() + all_targets.sum() - intersection
         iou = intersection / (union + 1e-8)
         
-        # Compute Dice
         dice = (2.0 * intersection) / (binary_preds.sum() + all_targets.sum() + 1e-8)
-        
-        # Compute pixel accuracy
         accuracy = (binary_preds == all_targets).mean()
         
         return {
@@ -136,11 +160,10 @@ class BaseValidator:
     
     def save_visualizations(self, num_samples: int = 4):
         """Save visualization of predictions."""
-        if self.save_dir is None:
+        if self.save_dir is None or self.dataloader is None:
             return
         
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        
         self.model.eval()
         samples_saved = 0
         
@@ -152,6 +175,10 @@ class BaseValidator:
                 images = batch["image"].to(self.device, non_blocking=True)
                 valid_masks = batch["valid_mask"].to(self.device, non_blocking=True)
                 masks = batch["mask"].to(self.device, non_blocking=True)
+
+                images = self._ensure_4d_tensor(images)
+                valid_masks = self._ensure_4d_tensor(valid_masks)
+                masks = self._ensure_4d_tensor(masks)
                 
                 preds = self.model(images)
                 probs = torch.sigmoid(preds)
@@ -165,7 +192,6 @@ class BaseValidator:
                     valid = valid_masks[i].cpu().numpy()
                     pred = probs[i].cpu().numpy()
                     
-                    # Save visualization
                     self._save_sample(img, mask, valid, pred, samples_saved)
                     samples_saved += 1
     
@@ -208,5 +234,5 @@ class BaseValidator:
         axes[3].axis('off')
         
         plt.tight_layout()
-        plt.savefig(self.save_dir / f"val_sample_{idx}.png", dib=150, bbox_inches='tight')
+        plt.savefig(self.save_dir / f"val_sample_{idx}.png", dpi=150, bbox_inches='tight')
         plt.close()

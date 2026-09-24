@@ -237,7 +237,10 @@ class BaseTrainer:
                 device=str(self.device),
                 num_workers=self.num_workers,
                 save_dir=str(self.checkpoint_dir / "val_visualizations"),
+                dataloader=self.val_loader,
             )
+            # Explicitly sync both names for backwards compatibility
+            self.validator.dataloader = self.val_loader
             self.validator.val_loader = self.val_loader
         else:
             self.validator = None
@@ -356,6 +359,9 @@ class BaseTrainer:
 
         if self.validator is not None:
             self.validator.model = eval_model
+            # Always ensure dataloader is bound
+            if self.validator.dataloader is None:
+                self.validator.dataloader = self.val_loader
             metrics = self.validator.validate()
             val_loss = metrics.get("loss", 0.0)
             return val_loss, metrics
