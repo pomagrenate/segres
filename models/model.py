@@ -35,7 +35,12 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
             m = eval(m) if isinstance(m, str) else m  # eval strings
             for j, a in enumerate(args):
                 if isinstance(a, str):
-                    args[j] = eval(a)
+                    # Don't eval string literals like 'nearest', 'bilinear'
+                    try:
+                        args[j] = eval(a)
+                    except (NameError, SyntaxError):
+                        # Keep as string if eval fails
+                        args[j] = a
             
             n = n_ = max(round(n), 1) if n > 1 else n  # depth gain
             if m in (Conv, Bottleneck, C3k2, SPPF):
@@ -67,7 +72,12 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
             m = eval(m) if isinstance(m, str) else m
             for j, a in enumerate(args):
                 if isinstance(a, str):
-                    args[j] = eval(a)
+                    # Don't eval string literals like 'nearest', 'bilinear'
+                    try:
+                        args[j] = eval(a)
+                    except (NameError, SyntaxError):
+                        # Keep as string if eval fails
+                        args[j] = a
             
             n = n_ = max(round(n), 1) if n > 1 else n
             if m in (Conv, Bottleneck, C3k2, SPPF):
@@ -91,7 +101,12 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
             m = eval(m) if isinstance(m, str) else m
             for j, a in enumerate(args):
                 if isinstance(a, str):
-                    args[j] = eval(a)
+                    # Don't eval string literals like 'nearest', 'bilinear'
+                    try:
+                        args[j] = eval(a)
+                    except (NameError, SyntaxError):
+                        # Keep as string if eval fails
+                        args[j] = a
             
             n = n_ = max(round(n), 1) if n > 1 else n
             if m in (Conv, Bottleneck, C3k2, SPPF):

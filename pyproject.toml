@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "segres"
+version = "0.1.0"
+description = "General-purpose high-resolution segmentation framework"
+readme = "README_FRAMEWORK.md"
+requires-python = ">=3.8"
+license = {text = "AGPL-3.0"}
+authors = [
+    {name = "pomagrenate"}
+]
+keywords = ["segmentation", "deep-learning", "computer-vision", "ultralytics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=1.10.0",
+    "torchvision>=0.11.0",
+    "numpy>=1.20.0",
+    "opencv-python-headless>=4.5.0",
+    "pillow>=8.0.0",
+    "pandas>=1.3.0",
+    "matplotlib>=3.3.0",
+    "tqdm>=4.60.0",
+    "pyyaml>=5.4.0",
+    "astropy>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.910",
+]
+
+[project.scripts]
+segres = "cli:main"
+
+[project.urls]
+Homepage = "https://github.com/pomagrenate/segres"
+Repository = "https://github.com/pomagrenate/segres"
+
+[tool.setuptools]
+packages = ["segres"]
+
+[tool.setuptools.package-dir]
+segres = "."
