@@ -92,6 +92,8 @@ class LetterBox(BasePreprocessor):
     - If target > actual: scales up and pads (letterboxing)
     - If target < actual: scales down and pads (letterboxing)
     - Preserves aspect ratio
+    - Supports mod 32 alignment for stride compatibility
+    - Supports rectangular inference (minimal padding)
     """
     
     def __init__(
@@ -102,7 +104,7 @@ class LetterBox(BasePreprocessor):
         scaleup: bool = True,
         center: bool = True,
         stride: int = 32,
-        padding_value: float = 0.0,
+        padding_value: float = 114.0,  # Ultralytics uses 114 for gray padding
         interpolation: int = cv2.INTER_LINEAR,
     ):
         self.new_shape = new_shape
@@ -122,7 +124,7 @@ class LetterBox(BasePreprocessor):
         shape = img.shape[:2]  # current shape [height, width]
         new_shape = self.new_shape
         
-        # Scale ratio (new / old)
+        # Scale ratio (new / old) - constrain to long edge
         r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
         if not self.scaleup:  # only scale down, do not scale up (for better val mAP)
             r = min(r, 1.0)
@@ -132,9 +134,9 @@ class LetterBox(BasePreprocessor):
         new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
         dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
         
-        if self.auto:  # minimum rectangle
+        if self.auto:  # minimum rectangle - mod 32 alignment
             dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)
-        elif self.scale_fill:  # stretch
+        elif self.scale_fill:  # stretch - no padding
             dw, dh = 0.0, 0.0
             new_unpad = (new_shape[1], new_shape[0])
             ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]
@@ -193,28 +195,43 @@ class ComposePreprocess:
         return img, valid_mask
 
 
-def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get standard training preprocessing pipeline with LetterBox."""
+def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = False) -> ComposePreprocess:
+    """Get standard training preprocessing pipeline with LetterBox.
+    
+    Args:
+        img_size: Target image size (height, width)
+        auto: If True, use minimum rectangle with mod 32 alignment (more efficient)
+    """
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=True, center=True, padding_value=0.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=114.0),
     ])
 
 
-def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get validation preprocessing pipeline with LetterBox (no scaleup for better mAP)."""
+def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = True) -> ComposePreprocess:
+    """Get validation preprocessing pipeline with LetterBox (no scaleup for better mAP).
+    
+    Args:
+        img_size: Target image size (height, width)
+        auto: If True, use minimum rectangle with mod 32 alignment (more efficient, default)
+    """
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=False, center=True, padding_value=0.0),
+        LetterBox(new_shape=img_size, scaleup=False, center=True, auto=auto, padding_value=114.0),
     ])
 
 
-def get_inference_preprocessor(img_size: Tuple[int, int] = (1024, 1024)) -> ComposePreprocess:
-    """Get inference preprocessing pipeline with LetterBox."""
+def get_inference_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = True) -> ComposePreprocess:
+    """Get inference preprocessing pipeline with LetterBox.
+    
+    Args:
+        img_size: Target image size (height, width)
+        auto: If True, use minimum rectangle with mod 32 alignment (more efficient, default)
+    """
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=True, center=True, padding_value=0.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=114.0),
     ])

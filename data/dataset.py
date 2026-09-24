@@ -39,6 +39,7 @@ class SegmentationDataset(Dataset):
         annotation_file: Optional[str] = None,
         mask_dir: Optional[str] = None,
         transform: Optional[Callable] = None,
+        auto: bool = False,  # Use minimum rectangle with mod 32 alignment
     ) -> None:
         super().__init__()
         self.data_root = Path(data_root)
@@ -48,6 +49,7 @@ class SegmentationDataset(Dataset):
         self.use_cache = use_cache
         self.cache_limit = max(0, cache_limit)
         self.transform = transform
+        self.auto = auto
         
         # Setup preprocessing and augmentation
         if self.augment:
@@ -55,7 +57,9 @@ class SegmentationDataset(Dataset):
         else:
             self.augmentation = get_validation_augmentation()
         
-        self.preprocessor = get_training_preprocessor(img_size) if self.split == 'train' else get_validation_preprocessor(img_size)
+        # Use auto=True for validation/inference for efficiency (rectangular inference)
+        auto_mode = auto if self.split != 'train' else False
+        self.preprocessor = get_training_preprocessor(img_size, auto=auto_mode) if self.split == 'train' else get_validation_preprocessor(img_size, auto=auto_mode)
         
         # Resolve paths
         self.image_dir = self._resolve_image_dir()

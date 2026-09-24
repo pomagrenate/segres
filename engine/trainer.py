@@ -152,6 +152,7 @@ class BaseTrainer:
             img_size=self.img_size,
             augment=True,
             use_cache=True,
+            auto=False,  # Training uses fixed size for consistency
         )
         
         # Split train/val

@@ -54,6 +54,7 @@ class BaseValidator:
             img_size=self.img_size,
             augment=False,
             use_cache=True,
+            auto=True,  # Use rectangular inference for efficiency
         )
         
         self.dataloader = DataLoader(
