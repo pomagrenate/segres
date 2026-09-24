@@ -1,4 +1,3 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ from engine.trainer import BaseTrainer
 from engine.validator import BaseValidator
 from engine.predictor import BasePredictor
 from utils import load_checkpoint
+from data.preprocess_config import PreprocessConfig
 
 
 def parse_args():
@@ -38,6 +38,8 @@ def parse_args():
     train_parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     train_parser.add_argument("--in-channels", type=int, default=3, help="Input channels")
     train_parser.add_argument("--num-classes", type=int, default=1, help="Number of classes")
+    train_parser.add_argument("--annotation-file", type=str, default=None, help="COCO annotation file path")
+    train_parser.add_argument("--preprocess-mode", type=str, default="standard", choices=["minimal", "standard", "native"], help="Preprocessing mode: minimal (no transforms), standard (geometric only), native (keep original resolution)")
     
     # Validate command
     val_parser = subparsers.add_parser("val", help="Validate a segmentation model")
@@ -86,6 +88,15 @@ def train(args):
     print(f"Batch size: {args.batch_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Device: {args.device}")
+    print(f"Preprocessing mode: {args.preprocess_mode}")
+    
+    # Build preprocessing config based on mode
+    if args.preprocess_mode == "minimal":
+        preprocess_config = PreprocessConfig.minimal()
+    elif args.preprocess_mode == "native":
+        preprocess_config = PreprocessConfig.native_resolution()
+    else:  # standard
+        preprocess_config = PreprocessConfig.standard_training(img_size=tuple(args.img_size))
     
     # Initialize trainer
     trainer = BaseTrainer(
@@ -105,6 +116,8 @@ def train(args):
         resume=args.resume,
         in_channels=args.in_channels,
         num_classes=args.num_classes,
+        preprocess_config=preprocess_config,
+        annotation_file=args.annotation_file,
     )
     
     # Start training

@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from models import SegmentationModel
 from data import SegmentationDataset, collate_fn
+from data.preprocess_config import PreprocessConfig
 from losses import SegmentationLoss as CompositeSegmentationLoss
 from engine.validator import BaseValidator
 
@@ -47,6 +48,8 @@ class BaseTrainer:
         resume: Optional[str] = None,
         in_channels: int = 3,
         num_classes: int = 1,
+        preprocess_config: Optional[PreprocessConfig] = None,
+        annotation_file: Optional[str] = None,
     ):
         self.model_cfg = model_cfg
         self.data_root = Path(data_root)
@@ -67,6 +70,8 @@ class BaseTrainer:
         self.resume = resume
         self.in_channels = in_channels
         self.num_classes = num_classes
+        self.preprocess_config = preprocess_config
+        self.annotation_file = annotation_file
         
         # Distributed training setup
         self.use_ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ
@@ -153,6 +158,8 @@ class BaseTrainer:
             augment=True,
             use_cache=True,
             auto=False,  # Training uses fixed size for consistency
+            preprocess_config=self.preprocess_config,
+            annotation_file=self.annotation_file,
         )
         
         # Split train/val
