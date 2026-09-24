@@ -2,7 +2,7 @@
 
 # Model settings
 model:
-  cfg: "cfg/models/soar_medium1.yaml"  # Model architecture YAML (nano, small, medium, large, xlarge)
+  cfg: "configs/models/soar_medium1.yaml"  # Model architecture YAML (nano, small, medium, large, xlarge)
   in_channels: 3               # Input channels (1 for grayscale, 3 for RGB)
   num_classes: 1               # Number of segmentation classes
 

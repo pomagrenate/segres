@@ -1,0 +1,30 @@
+# SOAR1-x (X-Large) resolution-preserving segmentation configuration
+# Capacity: ~19.6M parameters
+# Maximum semantic transformation capacity structured with spatial-cost awareness
+nc: 1
+channels: 3
+scale: x
+
+backbone:
+  - [-1, 1, CBA,  [40, 3, 2]]        # 0  stem detail skip  s2 (memory-capped)
+  - [-1, 1, Down, [80]]              # 1  downsample        s4
+  - [-1, 2, LKR,  [5, 2.0]]          # 2  P2                s4 (conservative)
+  - [-1, 1, Down, [192]]             # 3  downsample        s8
+  - [-1, 4, LKR,  [7, 2.0]]          # 4  P3                s8
+  - [-1, 1, Down, [384]]             # 5  downsample        s16
+  - [-1, 8, LKR,  [7, 2.0]]          # 6  P4 (deep engine)  s16
+  - [-1, 1, Down, [768]]             # 7  downsample        s32
+  - [-1, 5, LKR,  [7, 2.0]]          # 8  P5 (high cap)     s32
+  - [-1, 1, Ctx,  [768]]             # 9  context pooling   s32
+
+decoder:
+  - [[-1, 6], 1, Fuse, [384]]        # 10 P5ctx + P4        s16
+  - [-1, 2, LKR, [7, 2.0]]           # 11                   s16
+  - [[-1, 4], 1, Fuse, [192]]        # 12 + P3              s8
+  - [-1, 2, LKR, [7, 2.0]]           # 13                   s8
+  - [[-1, 2], 1, Fuse, [80]]         # 14 + P2              s4
+  - [[14, 13, 11], 1, Agg, [80]]     # 15 multi-scale agg   s4
+  - [[-1, 0], 1, Fuse, [40]]         # 16 + stem detail     s2
+
+head:
+  - [-1, 1, SegHead, [40, 2, 0.01]]  # 17 sub-pixel head    s2 -> s1
