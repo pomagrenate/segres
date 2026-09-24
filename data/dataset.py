@@ -29,11 +29,11 @@ cv2.ocl.setUseOpenCL(False)
 
 
 class SegmentationDataset(Dataset):
-    """
-    General-purpose segmentation dataset.
+    """General-purpose dense segmentation dataset for high-resolution imagery.
 
-    Supports various image formats and annotation formats (COCO JSON, YOLO, masks).
-    Designed to be flexible for any segmentation task, not domain-specific.
+    Supports diverse scientific and raster file formats (.npy, .fits, .png,
+    etc.) and parses polygon/RLE annotations from standard COCO and YOLO-style
+    structures.
     """
 
     SUPPORTED_EXTENSIONS = ('.npy', '.fits', '.fit', '.jpeg', '.jpg', '.png', '.bmp', '.tiff')
@@ -49,8 +49,8 @@ class SegmentationDataset(Dataset):
         annotation_file: Optional[str] = None,
         mask_dir: Optional[str] = None,
         transform: Optional[Callable] = None,
-        auto: bool = False,  # Use minimum rectangle with mod 32 alignment
-        preprocess_config: Optional[PreprocessConfig] = None,  # Explicit preprocessing config
+        auto: bool = False,
+        preprocess_config: Optional[PreprocessConfig] = None,
     ) -> None:
         super().__init__()
         self.data_root = Path(data_root)
@@ -64,13 +64,13 @@ class SegmentationDataset(Dataset):
         self.transform = transform
         self.auto = auto
 
-        # Setup preprocessing and augmentation
+        # Configure augmentation pipelines
         if self.augment:
             self.augmentation = get_training_augmentation()
         else:
             self.augmentation = get_validation_augmentation()
 
-        # Use explicit config if provided, otherwise use legacy defaults
+        # Build preprocessing pipelines
         if preprocess_config is not None:
             self.preprocessor = build_preprocessor_from_config(preprocess_config)
             if preprocess_config.geometric.letterbox and preprocess_config.geometric.target_size:
@@ -94,22 +94,22 @@ class SegmentationDataset(Dataset):
                 scaleup=self.is_train,
             )
 
-        # Resolve paths
+        # File directory indexing
         self.image_dir = self._resolve_image_dir()
         self.image_files = self._collect_image_files()
         if not self.image_files:
             raise FileNotFoundError(f"No valid image files found in {self.image_dir}")
 
-        # Load annotations
+        # Index label annotations
         self.annotations: Dict[str, Any] = {}
         self.img_to_masks: Dict[str, str] = {}
         self._load_annotations(annotation_file, mask_dir)
 
-        # Cache
+        # In-memory processing cache
         self._cache_store: Dict[str, Tuple[np.ndarray, Optional[np.ndarray], Optional[Dict]]] = {}
 
     def _resolve_image_dir(self) -> Path:
-        """Resolve image directory path."""
+        """Locate root directory containing image targets."""
         sub = "train" if self.has_gt else "test"
         candidate_paths = [
             self.data_root / sub / f"{sub}_images",
@@ -126,7 +126,7 @@ class SegmentationDataset(Dataset):
         )
 
     def _collect_image_files(self) -> List[Path]:
-        """Collect all supported image files."""
+        """Index all matching image files across supported extensions."""
         files: List[Path] = []
         for ext in self.SUPPORTED_EXTENSIONS:
             files.extend(self.image_dir.glob(f"*{ext}"))
@@ -134,7 +134,7 @@ class SegmentationDataset(Dataset):
         return sorted(files)
 
     def _load_annotations(self, annotation_file: Optional[str], mask_dir: Optional[str]) -> None:
-        """Load annotations from COCO JSON, YOLO, or mask directory."""
+        """Parse annotations across COCO format, YOLO labels, or mask bitmaps."""
         if annotation_file:
             ann_path = Path(annotation_file)
             if not ann_path.is_absolute():
@@ -179,7 +179,7 @@ class SegmentationDataset(Dataset):
                 return
 
     def _load_coco_annotations(self, ann_path: Path) -> None:
-        """Load annotations from COCO JSON format."""
+        """Parse COCO polygon structure."""
         with open(ann_path, "r", encoding="utf-8") as f:
             coco_payload = json.load(f)
 
@@ -200,7 +200,7 @@ class SegmentationDataset(Dataset):
             self.annotations[fname].append(ann)
 
     def _resolve_yolo_labels_dir(self) -> Optional[Path]:
-        """Resolve YOLO labels directory path."""
+        """Locate YOLO label directory."""
         sub = "train" if self.has_gt else "test"
         candidate_paths = [
             self.data_root / sub / "labels",
@@ -214,14 +214,14 @@ class SegmentationDataset(Dataset):
         return None
 
     def _load_yolo_annotations(self, labels_dir: Path) -> None:
-        """Load annotations from YOLO format (segmentation or detection)."""
+        """Index YOLO annotations."""
         for label_file in labels_dir.glob("*.txt"):
             img_name = label_file.stem
             self.img_to_masks[img_name] = "yolo"
             self.annotations[img_name] = str(label_file)
 
     def _parse_yolo_annotation(self, label_file: Path, img_width: int, img_height: int) -> List[Dict[str, Any]]:
-        """Parse YOLO annotation file."""
+        """Parse raw coordinates from YOLO text labels."""
         annotations = []
         with open(label_file, "r") as f:
             for line in f:
@@ -267,14 +267,14 @@ class SegmentationDataset(Dataset):
         return annotations
 
     def _load_mask_directory(self, mask_path: Path) -> None:
-        """Load annotations from mask directory (one mask per image)."""
+        """Index mask bitmaps stored directly in directories."""
         for mask_file in mask_path.glob("*"):
             if mask_file.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.tiff'):
                 img_name = mask_file.stem
                 self.img_to_masks[img_name] = str(mask_file)
 
     def _read_image(self, path: Path) -> np.ndarray:
-        """Read image from file."""
+        """Load image arrays from disk across formats."""
         ext = path.suffix.lower()
 
         if ext == '.npy':
@@ -302,7 +302,7 @@ class SegmentationDataset(Dataset):
         return arr
 
     def _read_mask(self, img_path: Path) -> Optional[np.ndarray]:
-        """Read mask for image."""
+        """Retrieve or construct the ground truth mask for a given sample."""
         img_name = img_path.name
 
         if img_name in self.img_to_masks:
@@ -323,7 +323,6 @@ class SegmentationDataset(Dataset):
                             mask = mask.copy()
                         return mask
 
-        # Fallback to searching without extension match
         stem = img_path.stem
         if stem in self.img_to_masks:
             return self._generate_yolo_mask(stem) if self.img_to_masks[stem] == "yolo" else self._generate_coco_mask(stem)
@@ -331,10 +330,9 @@ class SegmentationDataset(Dataset):
         return None
 
     def _generate_coco_mask(self, img_name: str) -> Optional[np.ndarray]:
-        """Generate mask from COCO polygon annotations."""
+        """Rasterize COCO polygon coordinates into a binary mask."""
         polys = self.annotations.get(img_name)
         if polys is None:
-            # Check by stem
             polys = next((v for k, v in self.annotations.items() if Path(k).stem == Path(img_name).stem), None)
 
         if not polys:
@@ -358,7 +356,7 @@ class SegmentationDataset(Dataset):
         return np.ascontiguousarray(mask)
 
     def _generate_yolo_mask(self, img_name: str) -> Optional[np.ndarray]:
-        """Generate mask from YOLO annotations."""
+        """Rasterize YOLO annotations into a binary mask."""
         if img_name not in self.annotations:
             return None
 
@@ -383,7 +381,7 @@ class SegmentationDataset(Dataset):
         return np.ascontiguousarray(mask)
 
     def _get_processed_data(self, path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[Dict]]:
-        """Get preprocessed image and mask with caching."""
+        """Retrieve preprocessed image and geometric mask with caching."""
         key = str(path)
         if key in self._cache_store:
             return self._cache_store[key]
@@ -405,15 +403,12 @@ class SegmentationDataset(Dataset):
 
         if processed_img.ndim == 2:
             processed_img = processed_img[np.newaxis, ...]
-            processed_img = np.ascontiguousarray(processed_img)
         if valid_mask is not None and valid_mask.ndim == 2:
             valid_mask = valid_mask[np.newaxis, ...]
-            valid_mask = np.ascontiguousarray(valid_mask)
 
-        if not processed_img.flags['C_CONTIGUOUS'] or not processed_img.flags['F_CONTIGUOUS']:
-            processed_img = processed_img.copy()
-        if valid_mask is not None and (not valid_mask.flags['C_CONTIGUOUS'] or not valid_mask.flags['F_CONTIGUOUS']):
-            valid_mask = valid_mask.copy()
+        processed_img = np.ascontiguousarray(processed_img)
+        if valid_mask is not None:
+            valid_mask = np.ascontiguousarray(valid_mask)
 
         res = (processed_img, valid_mask, meta)
         if len(self._cache_store) < self.cache_limit:
@@ -446,14 +441,14 @@ class SegmentationDataset(Dataset):
             'meta': meta or {},
         }
 
-        # Load mask for both train and validation splits
+        # Handle ground truth masks for train/val splits
         if self.has_gt:
             mask = self._read_mask(img_path)
             target_h, target_w = img.shape[-2:]
             if mask is None:
                 mask = np.zeros((target_h, target_w), dtype=np.float32)
 
-            # Apply mask preprocessing with INTER_NEAREST
+            # Mask preprocessing via nearest neighbor interpolation
             if self.mask_preprocessor is not None:
                 mask_processed, _, mask_meta = self.mask_preprocessor(mask)
                 mask = mask_processed.squeeze()
@@ -472,7 +467,7 @@ class SegmentationDataset(Dataset):
                 if mask_meta and isinstance(sample['meta'], dict):
                     sample['meta'].update({f'mask_{k}': v for k, v in mask_meta.items()})
 
-            # Apply augmentation only when enabled (during training)
+            # Training data augmentations
             if self.augment:
                 img_np = img.transpose(1, 2, 0) if img.ndim == 3 else img
                 img_np, mask = self.augmentation(img_np, mask)
@@ -495,6 +490,18 @@ class SegmentationDataset(Dataset):
             sample['mask'] = None
             sample['has_object'] = False
 
+        # Enforce canonical 3D tensor layout (C, H, W) before batch assembly
+        if sample['image'].ndim == 2:
+            sample['image'] = sample['image'].unsqueeze(0)
+        elif sample['image'].ndim == 3 and sample['image'].shape[-1] in (1, 3):
+            sample['image'] = sample['image'].permute(2, 0, 1)
+
+        if sample['valid_mask'].ndim == 2:
+            sample['valid_mask'] = sample['valid_mask'].unsqueeze(0)
+
+        if sample['mask'] is not None and sample['mask'].ndim == 2:
+            sample['mask'] = sample['mask'].unsqueeze(0)
+
         if self.transform is not None:
             sample = self.transform(sample)
 
@@ -502,21 +509,32 @@ class SegmentationDataset(Dataset):
 
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Collate function for DataLoader safely handling mask presence."""
+    """Assemble individual dataset items into uniformly dimensioned batch tensors."""
     if not batch:
         return {}
+
+    def ensure_chw(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        if tensor is None:
+            return None
+        if tensor.ndim == 2:
+            return tensor.unsqueeze(0)
+        return tensor
+
+    images = [ensure_chw(b['image']) for b in batch]
+    valid_masks = [ensure_chw(b['valid_mask']) for b in batch]
 
     has_mask = batch[0].get('mask') is not None
 
     res: Dict[str, Any] = {
-        'image': torch.stack([b['image'] for b in batch], dim=0),
-        'valid_mask': torch.stack([b['valid_mask'] for b in batch], dim=0),
+        'image': torch.stack(images, dim=0),
+        'valid_mask': torch.stack(valid_masks, dim=0),
         'image_id': [b['image_id'] for b in batch],
         'meta': [b.get('meta', {}) for b in batch],
     }
 
     if has_mask:
-        res['mask'] = torch.stack([b['mask'] for b in batch], dim=0)
+        masks = [ensure_chw(b['mask']) for b in batch]
+        res['mask'] = torch.stack(masks, dim=0)
         res['has_object'] = torch.tensor([b['has_object'] for b in batch], dtype=torch.bool)
     else:
         res['mask'] = None
