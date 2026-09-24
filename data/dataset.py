@@ -463,7 +463,26 @@ class SegmentationDataset(Dataset):
             # Apply mask preprocessing with INTER_NEAREST (critical for segmentation)
             if self.mask_preprocessor is not None:
                 mask_processed, _, mask_meta = self.mask_preprocessor(mask)
-                mask = mask_processed.squeeze() if mask_processed.ndim == 3 else mask_processed
+                # Get target dimensions from image
+                target_h, target_w = img.shape[-2:]
+                
+                # Force mask to be 2D (H, W)
+                mask = mask_processed
+                
+                # Squeeze all singleton dimensions
+                mask = mask.squeeze()
+                
+                # If still not 2D, use image dimensions to reshape
+                if mask.ndim != 2:
+                    if mask.ndim == 1 and mask.shape[0] == target_h * target_w:
+                        mask = mask.reshape(target_h, target_w)
+                    else:
+                        raise ValueError(f"Cannot reshape mask to 2D. Original shape: {mask_processed.shape}, squeezed: {mask.shape}, target: {target_h}x{target_w}")
+                
+                # Ensure mask matches image dimensions
+                if mask.shape != (target_h, target_w):
+                    mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+                
                 if mask_meta:
                     sample['meta'].update({f'mask_{k}': v for k, v in mask_meta.items()})
             
@@ -479,6 +498,15 @@ class SegmentationDataset(Dataset):
             # Ensure mask is contiguous before converting to tensor
             if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
                 mask = mask.copy()
+            
+            # Ensure mask has same spatial dimensions as image
+            target_h, target_w = img.shape[-2:]
+            if mask.ndim == 3:
+                mask = mask.squeeze()
+            if mask.shape != (target_h, target_w):
+                # Resize mask to match image dimensions
+                mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            
             sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask)).float().unsqueeze(0)
             sample['has_object'] = bool(mask.sum() > 0)
         else:
