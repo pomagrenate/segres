@@ -156,7 +156,7 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> nn.Sequential:
             layers.append(m_)
             ch.append(c2)
     
-    return nn.Sequential(*layers), save
+    return nn.Sequential(*layers)
 
 
 class SegmentationModel(nn.Module):
