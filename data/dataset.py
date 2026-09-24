@@ -438,6 +438,9 @@ class SegmentationDataset(Dataset):
                 img_np, mask = self.augmentation(img_np, mask)
                 img = img_np.transpose(2, 0, 1) if img_np.ndim == 3 else img_np
             
+            # Ensure mask is contiguous before converting to tensor
+            if not mask.flags['C_CONTIGUOUS']:
+                mask = mask.copy()
             sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask)).float().unsqueeze(0)
             sample['has_object'] = bool(mask.sum() > 0)
         else:
