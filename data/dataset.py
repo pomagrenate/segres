@@ -12,7 +12,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .augment import Compose, get_training_augmentation, get_validation_augmentation
-from .preprocess import ComposePreprocess, get_training_preprocessor, get_validation_preprocessor
+from .preprocess import ComposePreprocess, get_training_preprocessor, get_validation_preprocessor, get_mask_preprocessor
 
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)
@@ -60,6 +60,9 @@ class SegmentationDataset(Dataset):
         # Use auto=True for validation/inference for efficiency (rectangular inference)
         auto_mode = auto if self.split != 'train' else False
         self.preprocessor = get_training_preprocessor(img_size, auto=auto_mode) if self.split == 'train' else get_validation_preprocessor(img_size, auto=auto_mode)
+        
+        # Separate mask preprocessor with INTER_NEAREST interpolation
+        self.mask_preprocessor = get_mask_preprocessor(img_size, auto=auto_mode, scaleup=(self.split == 'train'))
         
         # Resolve paths
         self.image_dir = self._resolve_image_dir()
@@ -353,7 +356,7 @@ class SegmentationDataset(Dataset):
         
         return mask
     
-    def _get_processed_data(self, path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    def _get_processed_data(self, path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[Dict]]:
         """Get preprocessed image and mask with caching."""
         key = str(path)
         if key in self._cache_store:
@@ -365,8 +368,13 @@ class SegmentationDataset(Dataset):
         if raw_img.ndim == 3 and raw_img.shape[0] == 1:
             raw_img = raw_img[0]
         
-        # Preprocess
-        processed_img, valid_mask = self.preprocessor(raw_img)
+        # Preprocess (returns img, valid_mask, meta)
+        result = self.preprocessor(raw_img)
+        if len(result) == 3:
+            processed_img, valid_mask, meta = result
+        else:
+            processed_img, valid_mask = result
+            meta = {}
         
         # Add channel dimension if needed
         if processed_img.ndim == 2:
@@ -374,7 +382,7 @@ class SegmentationDataset(Dataset):
         if valid_mask is not None and valid_mask.ndim == 2:
             valid_mask = valid_mask[np.newaxis, ...]
         
-        res = (processed_img, valid_mask)
+        res = (processed_img, valid_mask, meta)
         if len(self._cache_store) < self.cache_limit:
             self._cache_store[key] = res
         
@@ -385,12 +393,13 @@ class SegmentationDataset(Dataset):
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         img_path = self.image_files[idx]
-        img, valid_mask = self._get_processed_data(img_path)
+        img, valid_mask, meta = self._get_processed_data(img_path)
         
         sample = {
             'image': torch.from_numpy(np.ascontiguousarray(img)).float(),
             'valid_mask': torch.from_numpy(np.ascontiguousarray(valid_mask)).float() if valid_mask is not None else torch.ones_like(img),
             'image_id': img_path.stem,
+            'meta': meta,  # Transform metadata for unpadding
         }
         
         # Load mask for training
@@ -399,7 +408,11 @@ class SegmentationDataset(Dataset):
             if mask is None:
                 mask = np.zeros(img.shape[-2:], dtype=np.float32)
             
-            # Apply augmentation
+            # Apply mask preprocessing with INTER_NEAREST (critical for segmentation)
+            mask_processed, _, mask_meta = self.mask_preprocessor(mask)
+            mask = mask_processed.squeeze() if mask_processed.ndim == 3 else mask_processed
+            
+            # Apply augmentation (after preprocessing)
             if self.augment:
                 img_np = img.transpose(1, 2, 0) if img.ndim == 3 else img
                 img_np, mask = self.augmentation(img_np, mask)
@@ -407,6 +420,9 @@ class SegmentationDataset(Dataset):
             
             sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask)).float().unsqueeze(0)
             sample['has_object'] = bool(mask.sum() > 0)
+            # Merge mask metadata with image metadata
+            if mask_meta:
+                sample['meta'].update({f'mask_{k}': v for k, v in mask_meta.items()})
         else:
             sample['mask'] = None
             sample['has_object'] = False
@@ -432,10 +448,12 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             'mask': torch.stack([b['mask'] for b in batch], dim=0),
             'has_object': torch.tensor([b['has_object'] for b in batch], dtype=torch.bool),
             'image_id': [b['image_id'] for b in batch],
+            'meta': [b.get('meta', {}) for b in batch],  # Transform metadata
         }
     
     return {
         'image': torch.stack([b['image'] for b in batch], dim=0),
         'valid_mask': torch.stack([b['valid_mask'] for b in batch], dim=0),
         'image_id': [b['image_id'] for b in batch],
+        'meta': [b.get('meta', {}) for b in batch],  # Transform metadata
     }

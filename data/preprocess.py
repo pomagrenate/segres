@@ -94,6 +94,10 @@ class LetterBox(BasePreprocessor):
     - Preserves aspect ratio
     - Supports mod 32 alignment for stride compatibility
     - Supports rectangular inference (minimal padding)
+    
+    For scientific segmentation (normalized float data):
+    - Uses padding_value=0.0 (background) instead of 114.0 (RGB gray)
+    - Returns metadata for unpadding during inference
     """
     
     def __init__(
@@ -104,7 +108,7 @@ class LetterBox(BasePreprocessor):
         scaleup: bool = True,
         center: bool = True,
         stride: int = 32,
-        padding_value: float = 114.0,  # Ultralytics uses 114 for gray padding
+        padding_value: float = 0.0,  # 0.0 for normalized float data (background)
         interpolation: int = cv2.INTER_LINEAR,
     ):
         self.new_shape = new_shape
@@ -116,7 +120,14 @@ class LetterBox(BasePreprocessor):
         self.padding_value = padding_value
         self.interpolation = interpolation
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        """Apply letterbox transform.
+        
+        Returns:
+            padded: Padded image
+            valid_mask: Mask indicating valid regions (1) vs padding (0)
+            meta: Transform metadata for unpadding (ratio, padding, original shape)
+        """
         # Handle both (H, W) and (H, W, C) shapes
         if img.ndim == 2:
             img = img[..., None]
@@ -174,7 +185,121 @@ class LetterBox(BasePreprocessor):
         if right > 0:
             valid_mask[:, -right:] = 0
         
-        return padded, valid_mask
+        # Store transform metadata for unpadding
+        meta = {
+            'ratio': ratio,  # (width_ratio, height_ratio)
+            'padding': (top, bottom, left, right),
+            'original_shape': shape,  # (height, width)
+            'new_shape': new_shape,  # (height, width)
+            'new_unpad': new_unpad,  # (width, height) after resize
+        }
+        
+        return padded, valid_mask, meta
+
+
+class LetterBoxMask(BasePreprocessor):
+    """Resize and pad mask to target size using INTER_NEAREST interpolation.
+    
+    Critical for segmentation: masks must use nearest-neighbor interpolation to avoid
+    introducing fractional values at boundaries (e.g., 0.15, 0.65) which corrupt
+    edge-loss calculations and single-pixel-wide filament boundaries.
+    
+    Uses same transform parameters as LetterBox for consistency.
+    """
+    
+    def __init__(
+        self,
+        new_shape: Tuple[int, int] = (1024, 1024),
+        auto: bool = False,
+        scale_fill: bool = False,
+        scaleup: bool = True,
+        center: bool = True,
+        stride: int = 32,
+        padding_value: int = 0,  # 0 for mask (background/ignore)
+    ):
+        self.new_shape = new_shape
+        self.auto = auto
+        self.scale_fill = scale_fill
+        self.scaleup = scaleup
+        self.stride = stride
+        self.center = center
+        self.padding_value = padding_value
+    
+    def __call__(self, mask: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        """Apply letterbox transform to mask with INTER_NEAREST.
+        
+        Returns:
+            padded: Padded mask
+            valid_mask: Mask indicating valid regions (1) vs padding (0)
+            meta: Transform metadata for unpadding
+        """
+        # Handle both (H, W) and (H, W, C) shapes
+        if mask.ndim == 2:
+            mask = mask[..., None]
+        
+        shape = mask.shape[:2]  # current shape [height, width]
+        new_shape = self.new_shape
+        
+        # Scale ratio (new / old) - constrain to long edge
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+        if not self.scaleup:
+            r = min(r, 1.0)
+        
+        # Compute padding
+        ratio = r, r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+        
+        if self.auto:
+            dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)
+        elif self.scale_fill:
+            dw, dh = 0.0, 0.0
+            new_unpad = (new_shape[1], new_shape[0])
+            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]
+        
+        if self.center:
+            dw /= 2
+            dh /= 2
+        
+        top, bottom = int(round(dh - 0.1)) if self.center else 0, int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)) if self.center else 0, int(round(dw + 0.1))
+        
+        # Resize with INTER_NEAREST (critical for masks)
+        if shape[::-1] != new_unpad:
+            mask = cv2.resize(mask, new_unpad, interpolation=cv2.INTER_NEAREST)
+        
+        # Pad
+        if mask.ndim == 2:
+            mask = mask[..., None]
+        
+        h, w, c = mask.shape
+        padded = cv2.copyMakeBorder(
+            mask, top, bottom, left, right,
+            cv2.BORDER_CONSTANT,
+            value=(self.padding_value,) * c if c > 1 else self.padding_value
+        )
+        
+        # Create valid mask
+        valid_mask = np.ones((padded.shape[0], padded.shape[1]), dtype=np.float32)
+        if top > 0:
+            valid_mask[:top, :] = 0
+        if bottom > 0:
+            valid_mask[-bottom:, :] = 0
+        if left > 0:
+            valid_mask[:, :left] = 0
+        if right > 0:
+            valid_mask[:, -right:] = 0
+        
+        # Store transform metadata
+        meta = {
+            'ratio': ratio,
+            'padding': (top, bottom, left, right),
+            'original_shape': shape,
+            'new_shape': new_shape,
+            'new_unpad': new_unpad,
+        }
+        
+        return padded, valid_mask, meta
 
 
 class ComposePreprocess:
@@ -183,16 +308,30 @@ class ComposePreprocess:
     def __init__(self, transforms: list):
         self.transforms = transforms
     
-    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def __call__(self, img: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        """Apply composed transforms.
+        
+        Returns:
+            img: Processed image
+            valid_mask: Mask indicating valid regions
+            meta: Combined transform metadata
+        """
         valid_mask = None
+        meta = {}
         for t in self.transforms:
-            img, mask = t(img)
+            result = t(img)
+            if len(result) == 3:
+                img, mask, step_meta = result
+                if step_meta:
+                    meta.update(step_meta)
+            else:
+                img, mask = result
             if mask is not None:
                 if valid_mask is None:
                     valid_mask = mask
                 else:
                     valid_mask = valid_mask * mask
-        return img, valid_mask
+        return img, valid_mask, meta
 
 
 def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = False) -> ComposePreprocess:
@@ -205,7 +344,7 @@ def get_training_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bo
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=114.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=0.0),
     ])
 
 
@@ -219,7 +358,7 @@ def get_validation_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: 
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=False, center=True, auto=auto, padding_value=114.0),
+        LetterBox(new_shape=img_size, scaleup=False, center=True, auto=auto, padding_value=0.0),
     ])
 
 
@@ -233,5 +372,22 @@ def get_inference_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: b
     return ComposePreprocess([
         Normalize01(percentiles=(1.0, 99.0)),
         CLAHE(clip_limit=2.5, tile_grid_size=(8, 8)),
-        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=114.0),
+        LetterBox(new_shape=img_size, scaleup=True, center=True, auto=auto, padding_value=0.0),
     ])
+
+
+def get_mask_preprocessor(img_size: Tuple[int, int] = (1024, 1024), auto: bool = False, scaleup: bool = True) -> LetterBoxMask:
+    """Get mask preprocessor with INTER_NEAREST interpolation.
+    
+    Args:
+        img_size: Target image size (height, width)
+        auto: If True, use minimum rectangle with mod 32 alignment
+        scaleup: If True, allow scaling up
+    """
+    return LetterBoxMask(
+        new_shape=img_size,
+        scaleup=scaleup,
+        center=True,
+        auto=auto,
+        padding_value=0,
+    )
