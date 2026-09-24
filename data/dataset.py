@@ -272,7 +272,11 @@ class SegmentationDataset(Dataset):
         
         if ext == '.npy':
             arr = np.load(path)
-            return np.asarray(arr, dtype=np.float32)
+            arr = np.asarray(arr, dtype=np.float32)
+            # Ensure contiguous array
+            if not arr.flags['C_CONTIGUOUS'] or not arr.flags['F_CONTIGUOUS']:
+                arr = arr.copy()
+            return arr
         
         if ext in ('.fits', '.fit'):
             try:
@@ -314,6 +318,9 @@ class SegmentationDataset(Dataset):
                         mask = np.array(mask_img.convert('L'), dtype=np.float32)
                         if mask.max() > 1.0:
                             mask /= 255.0
+                        # Ensure contiguous array
+                        if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
+                            mask = mask.copy()
                         return mask
         
         return None
@@ -340,6 +347,9 @@ class SegmentationDataset(Dataset):
                     pts = np.array(poly, dtype=np.int32).reshape(-1, 1, 2)
                     cv2.fillPoly(mask, [pts], color=1)
         
+        # Ensure contiguous array
+        if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
+            mask = mask.copy()
         return mask
     
     def _generate_yolo_mask(self, img_name: str) -> Optional[np.ndarray]:
@@ -368,6 +378,9 @@ class SegmentationDataset(Dataset):
                     pts = np.array(poly, dtype=np.int32).reshape(-1, 1, 2)
                     cv2.fillPoly(mask, [pts], color=1)
         
+        # Ensure contiguous array
+        if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
+            mask = mask.copy()
         return mask
     
     def _get_processed_data(self, path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[Dict]]:
@@ -382,6 +395,10 @@ class SegmentationDataset(Dataset):
         if raw_img.ndim == 3 and raw_img.shape[0] == 1:
             raw_img = raw_img[0]
         
+        # Ensure raw_img is contiguous before preprocessing
+        if not raw_img.flags['C_CONTIGUOUS'] or not raw_img.flags['F_CONTIGUOUS']:
+            raw_img = raw_img.copy()
+        
         # Preprocess (returns img, valid_mask, meta)
         result = self.preprocessor(raw_img)
         if len(result) == 3:
@@ -393,8 +410,16 @@ class SegmentationDataset(Dataset):
         # Add channel dimension if needed
         if processed_img.ndim == 2:
             processed_img = processed_img[np.newaxis, ...]
+            processed_img = np.ascontiguousarray(processed_img)
         if valid_mask is not None and valid_mask.ndim == 2:
             valid_mask = valid_mask[np.newaxis, ...]
+            valid_mask = np.ascontiguousarray(valid_mask)
+        
+        # Ensure arrays are contiguous before caching
+        if not processed_img.flags['C_CONTIGUOUS'] or not processed_img.flags['F_CONTIGUOUS']:
+            processed_img = processed_img.copy()
+        if valid_mask is not None and (not valid_mask.flags['C_CONTIGUOUS'] or not valid_mask.flags['F_CONTIGUOUS']):
+            valid_mask = valid_mask.copy()
         
         res = (processed_img, valid_mask, meta)
         if len(self._cache_store) < self.cache_limit:
@@ -409,12 +434,22 @@ class SegmentationDataset(Dataset):
         img_path = self.image_files[idx]
         img, valid_mask, meta = self._get_processed_data(img_path)
         
-        # Convert image to tensor first
+        # Convert image to tensor first, ensuring no negative strides
+        if not img.flags['C_CONTIGUOUS'] or not img.flags['F_CONTIGUOUS']:
+            img = img.copy()
         img_tensor = torch.from_numpy(np.ascontiguousarray(img)).float()
+        
+        # Handle valid_mask with negative strides
+        if valid_mask is not None:
+            if not valid_mask.flags['C_CONTIGUOUS'] or not valid_mask.flags['F_CONTIGUOUS']:
+                valid_mask = valid_mask.copy()
+            valid_mask_tensor = torch.from_numpy(np.ascontiguousarray(valid_mask)).float()
+        else:
+            valid_mask_tensor = torch.ones_like(img_tensor)
         
         sample = {
             'image': img_tensor,
-            'valid_mask': torch.from_numpy(np.ascontiguousarray(valid_mask)).float() if valid_mask is not None else torch.ones_like(img_tensor),
+            'valid_mask': valid_mask_tensor,
             'image_id': img_path.stem,
             'meta': meta,  # Transform metadata for unpadding
         }
@@ -437,9 +472,12 @@ class SegmentationDataset(Dataset):
                 img_np = img.transpose(1, 2, 0) if img.ndim == 3 else img
                 img_np, mask = self.augmentation(img_np, mask)
                 img = img_np.transpose(2, 0, 1) if img_np.ndim == 3 else img_np
+                # Ensure contiguous after transpose operations
+                img = np.ascontiguousarray(img)
+                mask = np.ascontiguousarray(mask)
             
             # Ensure mask is contiguous before converting to tensor
-            if not mask.flags['C_CONTIGUOUS']:
+            if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
                 mask = mask.copy()
             sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask)).float().unsqueeze(0)
             sample['has_object'] = bool(mask.sum() > 0)
