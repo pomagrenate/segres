@@ -16,6 +16,7 @@ from tqdm import tqdm
 from models import SegmentationModel
 from data import SegmentationDataset, collate_fn
 from losses import SegmentationLoss as CompositeSegmentationLoss
+from engine.validator import BaseValidator
 
 
 class BaseTrainer:
@@ -85,6 +86,7 @@ class BaseTrainer:
         self._setup_scheduler()
         self._setup_loss()
         self._setup_data()
+        self._setup_validator()
         self._setup_ema()
         self._setup_amp()
         self._load_checkpoint()
@@ -123,6 +125,23 @@ class BaseTrainer:
         raw_model = self.model.module if self.use_ddp else self.model
         # Default: Dice + BCE (strong generic baseline)
         self.criterion = CompositeSegmentationLoss()
+    
+    def _setup_validator(self):
+        """Initialize validator for metrics computation."""
+        if self.val_loader is not None and self.rank == 0:
+            raw_model = self.model.module if self.use_ddp else self.model
+            self.validator = BaseValidator(
+                model=raw_model,
+                data_root=str(self.data_root),
+                img_size=self.img_size,
+                batch_size=self.batch_size,
+                device=str(self.device),
+                num_workers=self.num_workers,
+                save_dir=str(self.checkpoint_dir / "val_visualizations"),
+            )
+            self.validator.setup_data(split="val")
+        else:
+            self.validator = None
     
     def _setup_data(self):
         """Initialize data loaders."""
@@ -256,11 +275,22 @@ class BaseTrainer:
         return total_loss / max(n_batches, 1)
     
     @torch.no_grad()
-    def validate(self, epoch: int) -> float:
-        """Validate the model."""
+    def validate(self, epoch: int) -> tuple[float, dict]:
+        """Validate the model and return loss and metrics."""
         if self.val_loader is None:
-            return 0.0
+            return 0.0, {}
         
+        # Use validator for metrics (Ultralytics pattern)
+        if self.validator is not None:
+            # Update validator model with current (or EMA) model
+            eval_model = self.ema.shadow_model if (self.ema is not None) else (self.model.module if self.use_ddp else self.model)
+            self.validator.model = eval_model
+            
+            metrics = self.validator.validate()
+            val_loss = metrics.get("loss", 0.0)
+            return val_loss, metrics
+        
+        # Fallback: simple loss-based validation
         eval_target = self.ema.shadow_model if (self.ema is not None and self.rank == 0) else (self.model.module if self.use_ddp else self.model)
         eval_target.eval()
         
@@ -283,7 +313,7 @@ class BaseTrainer:
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
             val_loss = loss_tensor.item()
         
-        return val_loss
+        return val_loss, {}
     
     def save_checkpoint(self, epoch: int, loss: float, is_best: bool = False):
         """Save checkpoint."""
@@ -326,17 +356,22 @@ class BaseTrainer:
             )
     
     def train(self):
-        """Main training loop."""
+        """Main training loop with validation at each epoch (Ultralytics pattern)."""
         for epoch in range(self.start_epoch, self.epochs):
             train_loss = self.train_epoch(epoch)
-            val_loss = self.validate(epoch)
+            val_loss, metrics = self.validate(epoch)
             eval_loss = val_loss if self.val_loader is not None else train_loss
             
             self.scheduler.step(eval_loss)
             lr_now = self.optimizer.param_groups[0]["lr"]
             
             if self.rank == 0:
-                if self.val_loader is not None:
+                if self.val_loader is not None and metrics:
+                    # Ultralytics-style logging with metrics
+                    iou = metrics.get("iou", 0.0)
+                    dice = metrics.get("dice", 0.0)
+                    print(f"[Epoch {epoch + 1}/{self.epochs}] train_loss={train_loss:.4f} val_loss={val_loss:.4f} iou={iou:.4f} dice={dice:.4f} lr={lr_now:.2e}", flush=True)
+                elif self.val_loader is not None:
                     print(f"[Epoch {epoch + 1}/{self.epochs}] train_loss={train_loss:.4f} val_loss={val_loss:.4f} lr={lr_now:.2e}", flush=True)
                 else:
                     print(f"[Epoch {epoch + 1}/{self.epochs}] train_loss={train_loss:.4f} lr={lr_now:.2e}", flush=True)
