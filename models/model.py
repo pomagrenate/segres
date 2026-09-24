@@ -59,6 +59,9 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                     args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
+                # Concat takes dimension argument (default 1)
+                if not args:
+                    args = [1]  # default dimension
             else:
                 c2 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
             
@@ -100,6 +103,9 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                     args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
+                # Concat takes dimension argument (default 1)
+                if not args:
+                    args = [1]  # default dimension
             else:
                 c2 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
             
@@ -137,6 +143,9 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                     args = [None, 2, 'nearest']  # defaults
             elif m is Concat:
                 c2 = sum(ch[x] for x in f)
+                # Concat takes dimension argument (default 1)
+                if not args:
+                    args = [1]  # default dimension
             elif m is nn.Conv2d:
                 c1 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
                 c2 = args[0] if args else d.get('nc', 1)
