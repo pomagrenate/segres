@@ -92,6 +92,8 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                 c2 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
             
             m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)
+            t = str(m)
+            m_.i, m_.f, m_.type = i, f, t  # attach index, 'from' index, type
             layers.append(m_)
             ch.append(c2)
     
@@ -125,6 +127,8 @@ def parse_model(d: Dict, ch: List[int], verbose: bool = True) -> Tuple[nn.Sequen
                 c2 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
             
             m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)
+            t = str(m)
+            m_.i, m_.f, m_.type = i, f, t  # attach index, 'from' index, type
             layers.append(m_)
             ch.append(c2)
     
