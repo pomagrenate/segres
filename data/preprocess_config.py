@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional, Tuple
 import cv2
 import numpy as np
@@ -74,9 +74,9 @@ class PreprocessConfig:
     - Nothing is silently enabled
     - Training/validation have separate pipelines
     """
-    canonical: CanonicalConfig = CanonicalConfig()
-    geometric: GeometricConfig = GeometricConfig()
-    appearance: AppearanceConfig = AppearanceConfig()
+    canonical: CanonicalConfig = field(default_factory=CanonicalConfig)
+    geometric: GeometricConfig = field(default_factory=GeometricConfig)
+    appearance: AppearanceConfig = field(default_factory=AppearanceConfig)
     
     @classmethod
     def minimal(cls) -> "PreprocessConfig":
