@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import yaml
-from pathlib import Path
 import sys
+from pathlib import Path
+from typing import Optional, Any, Dict
+import torch
+import yaml
 
 from .models import SegmentationModel
 from .engine.trainer import BaseTrainer
@@ -15,7 +17,7 @@ from .data.config import PreprocessConfig
 
 
 def resolve_config_path(path_str: Optional[str]) -> Optional[str]:
-    """Resolve config path across both configs/ and legacy cfg/ layouts."""
+    """Resolve config path across both configs/ and legacy cfg/ layouts with validation."""
     if path_str is None:
         return None
     p = Path(path_str)
@@ -29,7 +31,7 @@ def resolve_config_path(path_str: Optional[str]) -> Optional[str]:
         alt = Path(path_str.replace("configs/", "cfg/"))
         if alt.exists():
             return str(alt)
-    return path_str
+    return str(p)
 
 
 def parse_args():
@@ -58,6 +60,9 @@ def parse_args():
     train_parser.add_argument("--num-classes", type=int, default=1, help="Number of classes")
     train_parser.add_argument("--annotation-file", type=str, default=None, help="COCO annotation file path")
     train_parser.add_argument("--preprocess-mode", type=str, default="standard", choices=["minimal", "standard", "native"], help="Preprocessing mode: minimal (no transforms), standard (geometric only), native (keep original resolution)")
+    train_parser.add_argument("--balance-sampler", action="store_true", help="Enable positive:negative tile ratio balancing in DataLoader")
+    train_parser.add_argument("--positive-ratio", type=float, default=0.7, help="Target ratio of positive tiles when balance-sampler is enabled (default: 0.7)")
+    train_parser.add_argument("--sampler-mode", type=str, default="hybrid", choices=["hybrid", "weighted"], help="Balanced sampler mode: hybrid (all positives + subsampled negatives) or weighted (with replacement)")
     
     # Validate command
     val_parser = subparsers.add_parser("val", help="Validate a segmentation model")
@@ -136,6 +141,9 @@ def train(args):
         num_classes=args.num_classes,
         preprocess_config=preprocess_config,
         annotation_file=args.annotation_file,
+        balance_sampler=args.balance_sampler,
+        positive_ratio=args.positive_ratio,
+        sampler_mode=args.sampler_mode,
     )
     
     # Start training
@@ -190,9 +198,7 @@ def predict(args):
     print(f"Dataset: {args.data}")
     print(f"Device: {args.device}")
     print(f"Output format: {args.output_format}")
-    
-    import torch
-    
+
     # Load model
     model = SegmentationModel(
         cfg=args.model,

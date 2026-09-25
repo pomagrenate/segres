@@ -90,15 +90,8 @@ class BaseValidator:
             self.setup_data(split="val")
 
         self.model.eval()
-        total_loss = 0.0
-        n_batches = 0
-
-        # Streaming metric accumulators (zero host-RAM accumulation)
-        total_inter = 0.0
-        total_union = 0.0
-        total_cardinality = 0.0
-        total_correct = 0.0
-        total_pixels = 0.0
+        # Streaming metric accumulator on-device: [loss, n_batches, inter, union, card, correct, pixels]
+        accum = torch.zeros(7, dtype=torch.float64, device=self.device)
 
         is_rank_zero = (not dist.is_initialized()) or dist.get_rank() == 0
         pbar = (
@@ -114,45 +107,41 @@ class BaseValidator:
 
             preds = self.model(images)
             loss, _ = self.criterion(preds, masks, valid_masks, 0)
-            total_loss += loss.item()
-            n_batches += 1
 
-            probs = torch.sigmoid(preds).float()
-            bin_preds = (probs >= 0.5).float()
-            gt = masks.float()
+            probs = torch.sigmoid(preds)
+            bin_preds = (probs >= 0.5).to(dtype=torch.float32)
+            gt = masks.to(dtype=torch.float32)
 
             if valid_masks is not None:
-                vmask = valid_masks.float()
+                vmask = valid_masks.to(dtype=torch.float32)
                 bin_preds = bin_preds * vmask
                 gt = gt * vmask
-                active_pixels = vmask.sum().item()
+                active_pixels = vmask.sum()
             else:
-                active_pixels = float(gt.numel())
+                active_pixels = torch.tensor(gt.numel(), dtype=torch.float64, device=self.device)
 
-            inter = (bin_preds * gt).sum().item()
-            union = (bin_preds + gt).clamp_max(1.0).sum().item()
-            card = bin_preds.sum().item() + gt.sum().item()
-            correct = (bin_preds == gt).float()
+            inter = (bin_preds * gt).sum()
+            union = (bin_preds + gt).clamp_max(1.0).sum()
+            card = bin_preds.sum() + gt.sum()
+            correct = (bin_preds == gt).to(dtype=torch.float32)
             if valid_masks is not None:
-                correct = correct * valid_masks.float()
-            correct_val = correct.sum().item()
+                correct = correct * valid_masks.to(dtype=torch.float32)
+            correct_val = correct.sum()
 
-            total_inter += inter
-            total_union += union
-            total_cardinality += card
-            total_correct += correct_val
-            total_pixels += active_pixels
+            accum[0] += loss.detach()
+            accum[1] += 1.0
+            accum[2] += inter
+            accum[3] += union
+            accum[4] += card
+            accum[5] += correct_val
+            accum[6] += active_pixels
 
         # Synchronize metrics across distributed ranks
         if dist.is_initialized():
-            sync_tensor = torch.tensor(
-                [total_loss, n_batches, total_inter, total_union, total_cardinality, total_correct, total_pixels],
-                dtype=torch.float64,
-                device=self.device,
-            )
-            dist.all_reduce(sync_tensor, op=dist.ReduceOp.SUM)
-            vals = sync_tensor.cpu().tolist()
-            total_loss, n_batches, total_inter, total_union, total_cardinality, total_correct, total_pixels = vals
+            dist.all_reduce(accum, op=dist.ReduceOp.SUM)
+
+        vals = accum.cpu().tolist()
+        total_loss, n_batches, total_inter, total_union, total_cardinality, total_correct, total_pixels = vals
 
         iou = total_inter / max(total_union, 1e-7)
         dice = (2.0 * total_inter) / max(total_cardinality, 1e-7)

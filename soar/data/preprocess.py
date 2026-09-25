@@ -98,16 +98,16 @@ class PadToSize(BasePreprocessor):
         pad_w = max(0, target_w - w)
         
         if img.ndim == 3:
-            padding = ((0, 0), (0, pad_w), (0, pad_h))[:img.ndim]
+            padding = ((0, 0), (0, pad_h), (0, pad_w))
         else:
-            padding = ((0, pad_w), (0, pad_h))
+            padding = ((0, pad_h), (0, pad_w))
         
         padded = np.pad(img, padding, mode=self.mode, constant_values=self.value)
         valid_mask = np.ones_like(padded)
         if pad_h > 0:
-            valid_mask[..., -pad_h:] = 0
+            valid_mask[..., -pad_h:, :] = 0
         if pad_w > 0:
-            valid_mask[..., -pad_w:, :] = 0
+            valid_mask[..., :, -pad_w:] = 0
         
         meta = {'pad': True, 'target_size': self.size, 'padding': (pad_h, pad_w)}
         return padded, valid_mask, meta

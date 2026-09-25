@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Sequence, Union
 
 import cv2
 import numpy as np
 from PIL import Image
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler, WeightedRandomSampler, Subset
 
 from .augment import (
     Compose,
@@ -99,6 +99,8 @@ class SegmentationDataset(Dataset):
         self.image_files = self._collect_image_files()
         if not self.image_files:
             raise FileNotFoundError(f"No valid image files found in {self.image_dir}")
+        self.file_map: Dict[str, Path] = {f.name: f for f in self.image_files}
+        self.file_map.update({f.stem: f for f in self.image_files})
 
         # Index label annotations
         self.annotations: Dict[str, Any] = {}
@@ -288,20 +290,21 @@ class SegmentationDataset(Dataset):
             try:
                 from astropy.io import fits
                 with fits.open(path) as hdul:
-                    arr = hdul[0].data.astype(np.float32)
+                    arr = np.asarray(hdul[0].data, dtype=np.float32)
+                arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
             except ImportError:
                 raise ImportError("astropy library is required to read FITS files.")
         else:
             with Image.open(path) as img:
                 arr = np.array(img.convert('L'), dtype=np.float32)
 
-        max_val = arr.max()
+        max_val = np.nanmax(arr) if arr.size > 0 else 0.0
         if max_val > 1.0:
             arr /= 255.0 if max_val <= 255.0 else max_val
 
         return arr
 
-    def _read_mask(self, img_path: Path) -> Optional[np.ndarray]:
+    def _read_mask(self, img_path: Path, raw_shape: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
         """Retrieve or construct the ground truth mask for a given sample."""
         img_name = img_path.name
 
@@ -309,9 +312,9 @@ class SegmentationDataset(Dataset):
             mask_info = self.img_to_masks[img_name]
 
             if mask_info == "coco":
-                return self._generate_coco_mask(img_name)
+                return self._generate_coco_mask(img_name, raw_shape)
             elif mask_info == "yolo":
-                return self._generate_yolo_mask(img_name)
+                return self._generate_yolo_mask(img_name, raw_shape)
             else:
                 mask_path = Path(mask_info)
                 if mask_path.exists():
@@ -325,47 +328,51 @@ class SegmentationDataset(Dataset):
 
         stem = img_path.stem
         if stem in self.img_to_masks:
-            return self._generate_yolo_mask(stem) if self.img_to_masks[stem] == "yolo" else self._generate_coco_mask(stem)
+            return self._generate_yolo_mask(stem, raw_shape) if self.img_to_masks[stem] == "yolo" else self._generate_coco_mask(stem, raw_shape)
 
         return None
 
-    def _generate_coco_mask(self, img_name: str) -> Optional[np.ndarray]:
+    def _generate_coco_mask(self, img_name: str, raw_shape: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
         """Rasterize COCO polygon coordinates into a binary mask."""
         polys = self.annotations.get(img_name)
         if polys is None:
-            polys = next((v for k, v in self.annotations.items() if Path(k).stem == Path(img_name).stem), None)
+            polys = self.annotations.get(Path(img_name).stem)
 
         if not polys:
             return None
 
-        img_path = next((f for f in self.image_files if f.name == img_name or f.stem == Path(img_name).stem), None)
-        if img_path is None:
-            return None
-
-        img = self._read_image(img_path)
-        h, w = img.shape[-2:]
+        if raw_shape is not None:
+            h, w = raw_shape
+        else:
+            img_path = self.file_map.get(img_name) or self.file_map.get(Path(img_name).stem)
+            if img_path is None:
+                return None
+            img = self._read_image(img_path)
+            h, w = img.shape[-2:]
 
         mask = np.zeros((h, w), dtype=np.float32)
         for ann in polys:
             segmentation = ann.get("segmentation", [])
             if isinstance(segmentation, list):
                 for poly in segmentation:
-                    pts = np.array(poly, dtype=np.int32).reshape(-1, 1, 2)
+                    pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
                     cv2.fillPoly(mask, [pts], color=1)
 
         return np.ascontiguousarray(mask)
 
-    def _generate_yolo_mask(self, img_name: str) -> Optional[np.ndarray]:
+    def _generate_yolo_mask(self, img_name: str, raw_shape: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
         """Rasterize YOLO annotations into a binary mask."""
         if img_name not in self.annotations:
             return None
 
-        img_path = next((f for f in self.image_files if f.name == img_name or f.stem == img_name), None)
-        if img_path is None:
-            return None
-
-        img = self._read_image(img_path)
-        h, w = img.shape[-2:]
+        if raw_shape is not None:
+            h, w = raw_shape
+        else:
+            img_path = self.file_map.get(img_name) or self.file_map.get(Path(img_name).stem)
+            if img_path is None:
+                return None
+            img = self._read_image(img_path)
+            h, w = img.shape[-2:]
 
         label_file = Path(self.annotations[img_name])
         annotations = self._parse_yolo_annotation(label_file, w, h)
@@ -375,7 +382,7 @@ class SegmentationDataset(Dataset):
             segmentation = ann.get("segmentation", [])
             if isinstance(segmentation, list):
                 for poly in segmentation:
-                    pts = np.array(poly, dtype=np.int32).reshape(-1, 1, 2)
+                    pts = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
                     cv2.fillPoly(mask, [pts], color=1)
 
         return np.ascontiguousarray(mask)
@@ -401,6 +408,9 @@ class SegmentationDataset(Dataset):
             processed_img, valid_mask = result
             meta = {}
 
+        meta = dict(meta) if meta else {}
+        meta['raw_shape'] = raw_img.shape[-2:]
+
         if processed_img.ndim == 2:
             processed_img = processed_img[np.newaxis, ...]
         if valid_mask is not None and valid_mask.ndim == 2:
@@ -425,7 +435,7 @@ class SegmentationDataset(Dataset):
 
         # Handle ground truth masks for train/val splits
         if self.has_gt:
-            mask = self._read_mask(img_path)
+            mask = self._read_mask(img_path, raw_shape=meta.get('raw_shape') if meta else None)
             target_h, target_w = img.shape[-2:]
             if mask is None:
                 mask = np.zeros((target_h, target_w), dtype=np.float32)
@@ -547,3 +557,103 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         res['has_object'] = None
 
     return res
+
+
+class HybridBalancedSampler(Sampler):
+    """
+    Epoch-level balanced sampler without replacement for positive samples.
+    Guarantees every positive sample is seen at least once per epoch, paired with a balanced
+    subsample of negative background tiles to enforce the positive:negative ratio without
+    unnecessary sample duplication.
+    """
+
+    def __init__(
+        self,
+        positive_indices: Sequence[int],
+        negative_indices: Sequence[int],
+        positive_ratio: float = 0.7,
+        generator: Optional[torch.Generator] = None,
+    ):
+        self.positive_indices = list(positive_indices)
+        self.negative_indices = list(negative_indices)
+        self.positive_ratio = max(0.01, min(0.99, positive_ratio))
+        self.generator = generator
+
+    def __iter__(self):
+        g = self.generator
+        pos_perm = torch.randperm(len(self.positive_indices), generator=g).tolist()
+        shuffled_pos = [self.positive_indices[i] for i in pos_perm]
+
+        n_pos = len(self.positive_indices)
+        target_n_neg = int(round(n_pos * (1.0 - self.positive_ratio) / self.positive_ratio))
+
+        if len(self.negative_indices) >= target_n_neg:
+            neg_perm = torch.randperm(len(self.negative_indices), generator=g)[:target_n_neg].tolist()
+            sampled_neg = [self.negative_indices[i] for i in neg_perm]
+        else:
+            neg_t = torch.tensor(self.negative_indices, dtype=torch.long)
+            rand_idx = torch.randint(0, len(self.negative_indices), (target_n_neg,), generator=g)
+            sampled_neg = neg_t[rand_idx].tolist()
+
+        combined = shuffled_pos + sampled_neg
+        perm = torch.randperm(len(combined), generator=g).tolist()
+        for idx in perm:
+            yield combined[idx]
+
+    def __len__(self) -> int:
+        n_pos = len(self.positive_indices)
+        target_n_neg = int(round(n_pos * (1.0 - self.positive_ratio) / self.positive_ratio))
+        return n_pos + target_n_neg
+
+
+def build_balanced_sampler(
+    dataset: Union[SegmentationDataset, Subset],
+    positive_ratio: float = 0.7,
+    mode: str = "hybrid",
+) -> Optional[Sampler]:
+    """
+    Constructs sample weights or hybrid sampler to enforce target ratio of
+    object-containing tiles to background tiles without disk reads.
+    Modes:
+      'hybrid': All positives seen once per epoch + random subsample of negatives (no replacement).
+      'weighted': WeightedRandomSampler with replacement.
+    """
+    base_ds: SegmentationDataset = dataset.dataset if isinstance(dataset, Subset) else dataset
+    indices = dataset.indices if isinstance(dataset, Subset) else range(len(dataset))
+
+    pos_indices = []
+    neg_indices = []
+
+    for local_idx, orig_idx in enumerate(indices):
+        path = base_ds.image_files[orig_idx]
+        name = path.name
+        stem = path.stem
+        # O(1) in-memory check without disk read
+        has_ann = (name in base_ds.annotations) or (stem in base_ds.annotations)
+        is_pos = False
+        if has_ann:
+            anns = base_ds.annotations.get(name, base_ds.annotations.get(stem))
+            if isinstance(anns, list) and len(anns) > 0:
+                is_pos = True
+            elif isinstance(anns, str) and len(anns) > 0:
+                is_pos = True
+        elif name in base_ds.img_to_masks or stem in base_ds.img_to_masks:
+            is_pos = True
+
+        if is_pos:
+            pos_indices.append(local_idx)
+        else:
+            neg_indices.append(local_idx)
+
+    if not pos_indices or not neg_indices:
+        return None  # All positive or all negative, uniform sampler is optimal
+
+    if mode == "hybrid":
+        return HybridBalancedSampler(pos_indices, neg_indices, positive_ratio=positive_ratio)
+
+    w_pos = positive_ratio / len(pos_indices)
+    w_neg = (1.0 - positive_ratio) / len(neg_indices)
+    weights = torch.zeros(len(indices), dtype=torch.float64)
+    weights[pos_indices] = w_pos
+    weights[neg_indices] = w_neg
+    return WeightedRandomSampler(weights=weights, num_samples=len(indices), replacement=True)

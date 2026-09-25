@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Optional, Sequence, Union, List, Tuple
 import torch
 import torch.nn as nn
@@ -27,9 +28,16 @@ __all__ = (
 
 def select_group_count(channels: int, max_groups: int = 8) -> int:
     """Determine highest divisor of channels <= max_groups to guarantee GroupNorm divisibility."""
-    for g in range(min(max_groups, channels), 0, -1):
+    for g in range(min(max_groups, channels), 1, -1):
         if channels % g == 0:
             return g
+    if channels > 1:
+        warnings.warn(
+            f"select_group_count: channel count {channels} is indivisible by any group size in 2..{max_groups}. "
+            f"Falling back to num_groups=1 (LayerNorm-like behavior).",
+            UserWarning,
+            stacklevel=2,
+        )
     return 1
 
 
@@ -89,6 +97,8 @@ class LKR(nn.Module):
         self.pw1 = CBA(c, h, 1)
         self.pw2 = CBA(h, c, 1, act=False)
         nn.init.zeros_(self.pw2.norm.weight)
+        if self.pw2.norm.bias is not None:
+            nn.init.zeros_(self.pw2.norm.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.pw2(self.pw1(self.dw(x)))

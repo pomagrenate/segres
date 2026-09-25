@@ -9,8 +9,9 @@ from .base import BaseLoss
 
 def soft_erode(x: torch.Tensor) -> torch.Tensor:
     """Soft morphological erosion via directional min-pooling."""
-    p1 = -F.max_pool2d(-x, kernel_size=(3, 1), stride=1, padding=(1, 0))
-    p2 = -F.max_pool2d(-x, kernel_size=(1, 3), stride=1, padding=(0, 1))
+    neg_x = -x
+    p1 = -F.max_pool2d(neg_x, kernel_size=(3, 1), stride=1, padding=(1, 0))
+    p2 = -F.max_pool2d(neg_x, kernel_size=(1, 3), stride=1, padding=(0, 1))
     return torch.min(p1, p2)
 
 
@@ -19,20 +20,17 @@ def soft_dilate(x: torch.Tensor) -> torch.Tensor:
     return F.max_pool2d(x, kernel_size=3, stride=1, padding=1)
 
 
-def soft_open(x: torch.Tensor) -> torch.Tensor:
-    """Soft morphological opening."""
-    return soft_dilate(soft_erode(x))
-
-
 def soft_skeletonize(x: torch.Tensor, n_iter: int = 3) -> torch.Tensor:
     """Differentiable soft skeletonization for topological connectivity preservation."""
-    x_open = soft_open(x)
-    skel = F.relu(x - x_open)
+    skel = torch.zeros_like(x)
+    curr = x
     for _ in range(n_iter):
-        x = soft_erode(x)
-        x_open = soft_open(x)
-        delta = F.relu(x - x_open)
-        skel = skel + F.relu(delta - skel * delta)
+        eroded = soft_erode(curr)
+        # open(curr) = dilate(erode(curr)) = dilate(eroded)
+        opened = soft_dilate(eroded)
+        delta = F.relu(curr - opened)
+        skel = skel + delta * (1.0 - skel)
+        curr = eroded
     return skel
 
 

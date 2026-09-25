@@ -145,7 +145,19 @@ def parse_model(d: Dict[str, Any], ch: int = 3) -> Tuple[nn.Sequential, List[int
                 mid_channels = wc(args[0]) if args else 32
                 a = [c1, nc, mid_channels, *args[1:]]
 
-            m = nn.Sequential(*(cls(*a) for _ in range(n))) if n > 1 else cls(*a)
+            if n > 1:
+                sub_layers = []
+                curr_c1 = c1
+                for step in range(n):
+                    if kind == "ch":
+                        step_args = [curr_c1, c2, *a[2:]]
+                    else:
+                        step_args = a
+                    sub_layers.append(cls(*step_args))
+                    curr_c1 = c2
+                m = nn.Sequential(*sub_layers)
+            else:
+                m = cls(*a)
             m.i, m.f, m.mname, m.n = i, f, name, n
             m.np = sum(p.numel() for p in m.parameters())
             layers.append(m)
@@ -225,7 +237,7 @@ class SegmentationModel(nn.Module):
             x = F.pad(x, (0, pw, 0, ph), mode="reflect" if (ph < h and pw < w) else "replicate")
 
         rem = dict(self._consumer_counts)
-        y: List[Optional[torch.Tensor]] = [None] * len(self.model)
+        y: Dict[int, torch.Tensor] = {}
 
         for m in self.model:
             if m.f != -1:
@@ -233,7 +245,7 @@ class SegmentationModel(nn.Module):
                     x_in = y[m.f]
                     rem[m.f] -= 1
                     if rem[m.f] == 0:
-                        y[m.f] = None
+                        y.pop(m.f, None)
                 else:
                     x_in = []
                     for j in m.f:
@@ -243,7 +255,7 @@ class SegmentationModel(nn.Module):
                             x_in.append(y[j])
                             rem[j] -= 1
                             if rem[j] == 0:
-                                y[j] = None
+                                y.pop(j, None)
                 x = x_in
 
             x = m(x)
@@ -267,7 +279,9 @@ class SegmentationModel(nn.Module):
         was_training = self.training
         self.eval()
         try:
-            out = self.forward(torch.zeros(1, ch, size, size))
+            device = next(self.parameters()).device
+            dummy = torch.zeros(1, ch, size, size, device=device)
+            out = self.forward(dummy)
         finally:
             for hk in hooks:
                 hk.remove()

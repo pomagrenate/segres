@@ -51,20 +51,19 @@ class SegmentationLoss(nn.Module):
         valid_mask: Optional[torch.Tensor] = None,
         epoch: int = 0,
         auxiliary: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        loss_parts: Dict[str, float] = {}
-        total = torch.tensor(0.0, device=pred.device, dtype=torch.float32)
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        loss_parts: Dict[str, Any] = {}
 
         # Region loss
         region_loss = self.region(pred, target, valid_mask)
-        total = total + region_loss
-        loss_parts["region"] = float(region_loss.detach().item())
+        total = region_loss
+        loss_parts["region"] = region_loss.detach()
 
         # Boundary loss
         if self.boundary is not None:
             bnd_loss = self.boundary(pred, target, valid_mask)
             total = total + bnd_loss
-            loss_parts["boundary"] = float(bnd_loss.detach().item())
+            loss_parts["boundary"] = bnd_loss.detach()
 
         # Topological Structure loss with warmup scheduling
         if self.structure is not None:
@@ -77,9 +76,9 @@ class SegmentationLoss(nn.Module):
             if self.structure.weight > 0.0:
                 struct_loss = self.structure(pred, target, valid_mask)
                 total = total + struct_loss
-                loss_parts["cldice"] = float(struct_loss.detach().item())
+                loss_parts["cldice"] = struct_loss.detach()
             else:
-                loss_parts["cldice"] = 0.0
+                loss_parts["cldice"] = torch.tensor(0.0, device=pred.device)
 
         # Deep supervision
         if self.deep_supervision and auxiliary is not None:
@@ -88,9 +87,9 @@ class SegmentationLoss(nn.Module):
                 aux_pred = auxiliary[key]
                 ds_loss = ds_loss + weight * self.region(aux_pred, target, valid_mask)
             total = total + ds_loss
-            loss_parts["deep_supervision"] = float(ds_loss.detach().item())
+            loss_parts["deep_supervision"] = ds_loss.detach()
 
-        loss_parts["total"] = float(total.detach().item())
+        loss_parts["total"] = total.detach()
         return total, loss_parts
 
     @classmethod

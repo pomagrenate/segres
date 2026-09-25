@@ -82,8 +82,9 @@ class FocalLoss(BaseLoss):
         bce = F.binary_cross_entropy_with_logits(pred.float(), target, reduction="none")
         pt = prob * target + (1.0 - prob) * (1.0 - target)
         focal_weight = (1.0 - pt).clamp_min(0.0) ** self.gamma
+        alpha_t = target * self.alpha + (1.0 - target) * (1.0 - self.alpha)
 
-        loss = self.alpha * focal_weight * bce
+        loss = alpha_t * focal_weight * bce
         return self.weight * self._apply_valid_mask(loss, valid_mask)
 
 

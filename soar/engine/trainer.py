@@ -57,6 +57,9 @@ class BaseTrainer:
         num_classes: int = 1,
         preprocess_config: Optional[PreprocessConfig] = None,
         annotation_file: Optional[str] = None,
+        balance_sampler: bool = False,
+        positive_ratio: float = 0.7,
+        sampler_mode: str = "hybrid",
     ):
         self.model_cfg = model_cfg
         self.data_root = Path(data_root)
@@ -88,6 +91,9 @@ class BaseTrainer:
         self.num_classes = num_classes
         self.preprocess_config = preprocess_config
         self.annotation_file = annotation_file
+        self.balance_sampler = balance_sampler
+        self.positive_ratio = positive_ratio
+        self.sampler_mode = sampler_mode
 
         # Distributed training setup
         self.use_ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ
@@ -192,11 +198,17 @@ class BaseTrainer:
         train_ds = Subset(train_dataset, train_indices)
         val_ds = Subset(val_dataset, val_indices)
 
-        train_sampler = (
-            DistributedSampler(train_ds, num_replicas=self.world_size, rank=self.rank, shuffle=True)
-            if self.use_ddp
-            else None
-        )
+        if self.use_ddp:
+            train_sampler = DistributedSampler(train_ds, num_replicas=self.world_size, rank=self.rank, shuffle=True)
+        elif self.balance_sampler:
+            from ..data.dataset import build_balanced_sampler
+            train_sampler = build_balanced_sampler(
+                train_ds,
+                positive_ratio=self.positive_ratio,
+                mode=self.sampler_mode,
+            )
+        else:
+            train_sampler = None
         val_sampler = (
             DistributedSampler(val_ds, num_replicas=self.world_size, rank=self.rank, shuffle=False)
             if (self.use_ddp and val_len > 0)
@@ -235,7 +247,7 @@ class BaseTrainer:
         raw_model = self.model.module if self.use_ddp else self.model
         self.ema = (
             ModelEMA(raw_model, decay=self.ema_decay, device=self.device)
-            if (self.use_ema and self.rank == 0)
+            if self.use_ema
             else None
         )
 
@@ -243,7 +255,7 @@ class BaseTrainer:
         if self.val_loader is not None:
             eval_model = (
                 self.ema.shadow_model
-                if (self.ema is not None and self.rank == 0)
+                if self.ema is not None
                 else (self.model.module if self.use_ddp else self.model)
             )
             self.validator = BaseValidator(
@@ -308,7 +320,7 @@ class BaseTrainer:
         n_batches = len(self.train_loader)
 
         if self.rank == 0 and epoch == self.start_epoch:
-            print(f"\n{'Epoch':>10} {'GPU_mem':>10} {'total_loss':>12} {'bce_loss':>10} {'dice_loss':>10} {'cldice':>10}")
+            print(f"\n{'Epoch':>10} {'GPU_mem':>10} {'total_loss':>12} {'reg_loss':>10} {'bnd_loss':>10} {'cldice':>10}")
 
         pbar_desc = f"{f'{epoch + 1}/{self.epochs}':>10}"
         iterator = (
@@ -362,15 +374,15 @@ class BaseTrainer:
 
             if self.rank == 0:
                 mem = f"{torch.cuda.memory_reserved() / 1E9:.2f}G" if torch.cuda.is_available() else "0G"
-                bce = float(loss_parts.get("bce", 0.0))
-                dice = float(loss_parts.get("dice", 0.0))
-                cldice = float(loss_parts.get("cldice", 0.0))
+                region_l = float(loss_parts.get("region", 0.0))
+                bnd_l = float(loss_parts.get("boundary", 0.0))
+                cldice_l = float(loss_parts.get("cldice", 0.0))
                 iterator.set_postfix({
                     "gpu": mem,
                     "loss": f"{loss_val:.4f}",
-                    "bce": f"{bce:.3f}",
-                    "dice": f"{dice:.3f}",
-                    "cldice": f"{cldice:.3f}",
+                    "reg": f"{region_l:.3f}",
+                    "bnd": f"{bnd_l:.3f}",
+                    "cldice": f"{cldice_l:.3f}",
                 })
 
         return total_loss / max(n_batches, 1)

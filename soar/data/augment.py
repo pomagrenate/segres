@@ -57,8 +57,15 @@ class RandomRotate(BaseAugmentation):
 
         mask_out = None
         if mask is not None:
-            # Critical: Use INTER_NEAREST for masks to avoid interpolating labels
-            mask_out = cv2.warpAffine(mask, rot_mat, (w, h), flags=cv2.INTER_NEAREST)
+            # Handle multi-channel masks (e.g. (H, W, 2) stacked mask + valid_mask)
+            if mask.ndim == 3 and mask.shape[-1] not in (1, 3, 4):
+                warped_channels = [
+                    cv2.warpAffine(mask[..., c], rot_mat, (w, h), flags=cv2.INTER_NEAREST)
+                    for c in range(mask.shape[-1])
+                ]
+                mask_out = np.stack(warped_channels, axis=-1)
+            else:
+                mask_out = cv2.warpAffine(mask, rot_mat, (w, h), flags=cv2.INTER_NEAREST)
 
         return img_out, mask_out
 
@@ -74,23 +81,21 @@ class RandomFlip(BaseAugmentation):
     def _apply(
         self, img: np.ndarray, mask: Optional[np.ndarray] = None
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        img_out = img.copy()
-        mask_out = mask.copy() if mask is not None else None
+        h_flip = self.horizontal and random.random() < 0.5
+        v_flip = self.vertical and random.random() < 0.5
 
-        # Horizontal flip (axis 1 for HWC and HW)
-        if self.horizontal and random.random() < 0.5:
-            img_out = np.flip(img_out, axis=1)
-            if mask_out is not None:
-                mask_out = np.flip(mask_out, axis=1)
+        if h_flip:
+            img = np.flip(img, axis=1)
+            if mask is not None:
+                mask = np.flip(mask, axis=1)
 
-        # Vertical flip (axis 0 for HWC and HW)
-        if self.vertical and random.random() < 0.5:
-            img_out = np.flip(img_out, axis=0)
-            if mask_out is not None:
-                mask_out = np.flip(mask_out, axis=0)
+        if v_flip:
+            img = np.flip(img, axis=0)
+            if mask is not None:
+                mask = np.flip(mask, axis=0)
 
-        return np.ascontiguousarray(img_out), (
-            np.ascontiguousarray(mask_out) if mask_out is not None else None
+        return np.ascontiguousarray(img), (
+            np.ascontiguousarray(mask) if mask is not None else None
         )
 
 
