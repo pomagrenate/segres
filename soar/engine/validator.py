@@ -90,8 +90,8 @@ class BaseValidator:
             self.setup_data(split="val")
 
         self.model.eval()
-        # Streaming metric accumulator on-device: [loss, n_batches, inter, union, card, correct, pixels]
-        accum = torch.zeros(7, dtype=torch.float64, device=self.device)
+        # Streaming metric accumulator on-device: [loss, n_batches, inter, union, card]
+        accum = torch.zeros(5, dtype=torch.float64, device=self.device)
 
         is_rank_zero = (not dist.is_initialized()) or dist.get_rank() == 0
         pbar = (
@@ -116,61 +116,49 @@ class BaseValidator:
                 vmask = valid_masks.to(dtype=torch.float32)
                 bin_preds = bin_preds * vmask
                 gt = gt * vmask
-                active_pixels = vmask.sum()
-            else:
-                active_pixels = torch.tensor(gt.numel(), dtype=torch.float64, device=self.device)
 
             inter = (bin_preds * gt).sum()
             union = (bin_preds + gt).clamp_max(1.0).sum()
             card = bin_preds.sum() + gt.sum()
-            correct = (bin_preds == gt).to(dtype=torch.float32)
-            if valid_masks is not None:
-                correct = correct * valid_masks.to(dtype=torch.float32)
-            correct_val = correct.sum()
 
             accum[0] += loss.detach()
             accum[1] += 1.0
             accum[2] += inter
             accum[3] += union
             accum[4] += card
-            accum[5] += correct_val
-            accum[6] += active_pixels
 
         # Synchronize metrics across distributed ranks
         if dist.is_initialized():
             dist.all_reduce(accum, op=dist.ReduceOp.SUM)
 
         vals = accum.cpu().tolist()
-        total_loss, n_batches, total_inter, total_union, total_cardinality, total_correct, total_pixels = vals
+        total_loss, n_batches, total_inter, total_union, total_cardinality = vals
 
         iou = total_inter / max(total_union, 1e-7)
         dice = (2.0 * total_inter) / max(total_cardinality, 1e-7)
-        acc = total_correct / max(total_pixels, 1.0)
         avg_loss = total_loss / max(n_batches, 1)
 
         self.metrics = {
             "loss": float(avg_loss),
             "iou": float(iou),
             "dice": float(dice),
-            "accuracy": float(acc),
         }
         return self.metrics
 
     def print_results(self, epoch: Optional[int] = None):
         """Print validation metrics summary in clean tabular format."""
         ep_str = f"Epoch {epoch}" if epoch is not None else "Summary"
-        print(f"\n{'-'*75}")
-        print(f"{'Stage / Metric':<20} {'Samples':<10} {'Loss':<12} {'IoU':<12} {'Dice':<12} {'Acc':<10}")
-        print(f"{'-'*75}")
+        print(f"\n{'-'*65}")
+        print(f"{'Stage / Metric':<20} {'Samples':<10} {'Loss':<12} {'IoU':<12} {'Dice':<12}")
+        print(f"{'-'*65}")
 
         num_images = len(self.dataloader.dataset) if self.dataloader is not None else 0
         loss_val = self.metrics.get("loss", 0.0)
         iou_val = self.metrics.get("iou", 0.0)
         dice_val = self.metrics.get("dice", 0.0)
-        acc_val = self.metrics.get("accuracy", 0.0)
 
-        print(f"{ep_str:<20} {num_images:<10} {loss_val:<12.4f} {iou_val:<12.4f} {dice_val:<12.4f} {acc_val:<10.4f}")
-        print(f"{'-'*75}\n")
+        print(f"{ep_str:<20} {num_images:<10} {loss_val:<12.4f} {iou_val:<12.4f} {dice_val:<12.4f}")
+        print(f"{'-'*65}\n")
 
     def save_visualizations(self, num_samples: int = 4):
         """Save sample validation qualitative comparisons."""
