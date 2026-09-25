@@ -92,6 +92,13 @@ def parse_args():
     predict_parser.add_argument("--in-channels", type=int, default=3, help="Input channels")
     predict_parser.add_argument("--num-classes", type=int, default=1, help="Number of classes")
     
+    # Rasterize command
+    rasterize_parser = subparsers.add_parser("rasterize", help="Pre-rasterize COCO JSON polygon annotations into binary PNG masks")
+    rasterize_parser.add_argument("--annotation-file", type=str, required=True, help="Path to COCO JSON annotations")
+    rasterize_parser.add_argument("--output-dir", type=str, required=True, help="Directory to save pre-rasterized PNG masks")
+    rasterize_parser.add_argument("--image-dir", type=str, default=None, help="Directory of source images (if image width/height missing from JSON)")
+    rasterize_parser.add_argument("--workers", type=int, default=4, help="Number of worker processes")
+    
     return parser.parse_args()
 
 
@@ -252,6 +259,14 @@ def main():
         validate(args)
     elif args.command == "predict":
         predict(args)
+    elif args.command == "rasterize":
+        from .tools.rasterize import rasterize_coco_dataset
+        rasterize_coco_dataset(
+            annotation_file=args.annotation_file,
+            output_dir=args.output_dir,
+            image_dir=args.image_dir,
+            num_workers=args.workers,
+        )
     else:
         print(f"Unknown command: {args.command}")
         sys.exit(1)

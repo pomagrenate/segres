@@ -172,6 +172,7 @@ class BaseTrainer:
             data_root=self.data_root,
             split="train",
             img_size=self.img_size,
+            in_channels=self.in_channels,
             augment=True,
             use_cache=True,
             auto=False,
@@ -183,6 +184,7 @@ class BaseTrainer:
             data_root=self.data_root,
             split="val",
             img_size=self.img_size,
+            in_channels=self.in_channels,
             augment=False,
             use_cache=True,
             auto=False,
@@ -376,7 +378,7 @@ class BaseTrainer:
             loss_val = loss.item()
             total_loss += loss_val
 
-            if self.rank == 0:
+            if self.rank == 0 and ((i + 1) % 10 == 0 or (i + 1) == n_batches):
                 mem = f"{torch.cuda.memory_reserved() / 1E9:.2f}G" if torch.cuda.is_available() else "0G"
                 region_l = float(loss_parts.get("region", 0.0))
                 bnd_l = float(loss_parts.get("boundary", 0.0))

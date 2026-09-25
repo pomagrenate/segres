@@ -51,6 +51,7 @@ class SegmentationDataset(Dataset):
         transform: Optional[Callable] = None,
         auto: bool = False,
         preprocess_config: Optional[PreprocessConfig] = None,
+        in_channels: int = 3,
     ) -> None:
         super().__init__()
         self.data_root = Path(data_root)
@@ -58,6 +59,7 @@ class SegmentationDataset(Dataset):
         self.is_train = self.split in ('train', 'training')
         self.has_gt = self.split in ('train', 'training', 'val', 'valid', 'validation')
         self.img_size = img_size
+        self.in_channels = in_channels
         self.augment = augment and self.is_train
         self.use_cache = use_cache
         self.cache_limit = max(0, cache_limit)
@@ -128,15 +130,41 @@ class SegmentationDataset(Dataset):
         )
 
     def _collect_image_files(self) -> List[Path]:
-        """Index all matching image files across supported extensions."""
-        files: List[Path] = []
+        """Index all matching image files across supported extensions without duplicates."""
+        files: set[Path] = set()
         for ext in self.SUPPORTED_EXTENSIONS:
-            files.extend(self.image_dir.glob(f"*{ext}"))
-            files.extend(self.image_dir.glob(f"*{ext.upper()}"))
+            files.update(self.image_dir.glob(f"*{ext}"))
+            files.update(self.image_dir.glob(f"*{ext.upper()}"))
         return sorted(files)
 
     def _load_annotations(self, annotation_file: Optional[str], mask_dir: Optional[str]) -> None:
-        """Parse annotations across COCO format, YOLO labels, or mask bitmaps."""
+        """Parse annotations across COCO format, YOLO labels, or mask bitmaps.
+        Prioritizes pre-rasterized mask directories to bypass expensive on-the-fly polygon parsing.
+        """
+        # 1. Prioritize explicit mask directory if provided
+        if mask_dir:
+            mask_path = Path(mask_dir)
+            if not mask_path.is_absolute():
+                mask_path = self.data_root / mask_dir
+            if mask_path.is_dir() and any(mask_path.iterdir()):
+                self._load_mask_directory(mask_path)
+                if self.img_to_masks:
+                    return
+
+        # 2. Check candidate pre-rasterized mask directories
+        candidate_dirs = [
+            self.data_root / "masks",
+            self.data_root / f"{self.split}_masks",
+            self.data_root / "train_masks",
+            self.data_root / "train" / "masks",
+        ]
+        for candidate in candidate_dirs:
+            if candidate.is_dir() and any(candidate.iterdir()):
+                self._load_mask_directory(candidate)
+                if self.img_to_masks:
+                    return
+
+        # 3. Fall back to COCO JSON annotations if provided
         if annotation_file:
             ann_path = Path(annotation_file)
             if not ann_path.is_absolute():
@@ -145,19 +173,13 @@ class SegmentationDataset(Dataset):
                 self._load_coco_annotations(ann_path)
                 return
 
+        # 4. Fall back to YOLO labels
         yolo_labels_dir = self._resolve_yolo_labels_dir()
         if yolo_labels_dir and yolo_labels_dir.is_dir():
             self._load_yolo_annotations(yolo_labels_dir)
             return
 
-        if mask_dir:
-            mask_path = Path(mask_dir)
-            if not mask_path.is_absolute():
-                mask_path = self.data_root / mask_dir
-            if mask_path.is_dir():
-                self._load_mask_directory(mask_path)
-                return
-
+        # 5. Fall back to default candidate COCO JSON files
         candidate_files = [
             self.data_root / "train" / "MAGFiLO_1.0_Annotations_kaggle2026_train.json",
             self.data_root / "MAGFiLO_1.0_Annotations_kaggle2026_train.json",
@@ -168,16 +190,6 @@ class SegmentationDataset(Dataset):
         for candidate in candidate_files:
             if candidate.exists():
                 self._load_coco_annotations(candidate)
-                return
-
-        candidate_dirs = [
-            self.data_root / "train" / "masks",
-            self.data_root / "masks",
-            self.data_root / f"{self.split}_masks",
-        ]
-        for candidate in candidate_dirs:
-            if candidate.is_dir():
-                self._load_mask_directory(candidate)
                 return
 
     def _load_coco_annotations(self, ann_path: Path) -> None:
@@ -294,23 +306,50 @@ class SegmentationDataset(Dataset):
                 arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
             except ImportError:
                 raise ImportError("astropy library is required to read FITS files.")
-        else:
-            with Image.open(path) as img:
-                arr = np.array(img.convert('L'), dtype=np.float32)
+            max_val = np.nanmax(arr) if arr.size > 0 else 0.0
+            if max_val > 1.0:
+                arr /= 255.0 if max_val <= 255.0 else max_val
+            return arr
 
-        max_val = np.nanmax(arr) if arr.size > 0 else 0.0
-        if max_val > 1.0:
-            arr /= 255.0 if max_val <= 255.0 else max_val
+        # Fast native OpenCV decode (2-4x faster than PIL Image.open)
+        img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            # Fallback to PIL for rare/unsupported image variants
+            with Image.open(path) as pil_img:
+                img = np.array(pil_img)
 
-        return arr
+        # Handle color and bit depths
+        if img.ndim == 2:
+            # Grayscale uint8: values strictly in [0, 255], zero nanmax overhead
+            if img.dtype != np.uint8:
+                img = img.astype(np.float32)
+                max_val = np.nanmax(img) if img.size > 0 else 0.0
+                if max_val > 1.0:
+                    img /= 255.0 if max_val <= 255.0 else max_val
+            return img
+        elif img.ndim == 3:
+            # Convert BGR -> RGB when 3 channels
+            if img.shape[2] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            elif img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+
+            if img.dtype != np.uint8:
+                img = img.astype(np.float32)
+                max_val = np.nanmax(img) if img.size > 0 else 0.0
+                if max_val > 1.0:
+                    img /= 255.0 if max_val <= 255.0 else max_val
+            return img
+
+        return img
 
     def _read_mask(self, img_path: Path, raw_shape: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
         """Retrieve or construct the ground truth mask for a given sample."""
         img_name = img_path.name
+        stem = img_path.stem
 
-        if img_name in self.img_to_masks:
-            mask_info = self.img_to_masks[img_name]
-
+        mask_info = self.img_to_masks.get(img_name) or self.img_to_masks.get(stem)
+        if mask_info:
             if mask_info == "coco":
                 return self._generate_coco_mask(img_name, raw_shape)
             elif mask_info == "yolo":
@@ -318,17 +357,19 @@ class SegmentationDataset(Dataset):
             else:
                 mask_path = Path(mask_info)
                 if mask_path.exists():
-                    with Image.open(mask_path) as mask_img:
-                        mask = np.array(mask_img.convert('L'), dtype=np.float32)
-                        if mask.max() > 1.0:
-                            mask /= 255.0
-                        if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
-                            mask = mask.copy()
-                        return mask
-
-        stem = img_path.stem
-        if stem in self.img_to_masks:
-            return self._generate_yolo_mask(stem, raw_shape) if self.img_to_masks[stem] == "yolo" else self._generate_coco_mask(stem, raw_shape)
+                    # Fast OpenCV native grayscale decode
+                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    if mask is None:
+                        with Image.open(mask_path) as mask_img:
+                            mask = np.array(mask_img.convert('L'), dtype=np.uint8)
+                    # Convert to binary {0.0, 1.0}
+                    if mask.dtype == np.uint8 and mask.max() > 1:
+                        mask = (mask > 127).astype(np.float32)
+                    else:
+                        mask = mask.astype(np.float32)
+                    if not mask.flags['C_CONTIGUOUS'] or not mask.flags['F_CONTIGUOUS']:
+                        mask = np.ascontiguousarray(mask)
+                    return mask
 
         return None
 
@@ -436,7 +477,7 @@ class SegmentationDataset(Dataset):
         # Handle ground truth masks for train/val splits
         if self.has_gt:
             mask = self._read_mask(img_path, raw_shape=meta.get('raw_shape') if meta else None)
-            target_h, target_w = img.shape[-2:]
+            target_h, target_w = (img.shape[0], img.shape[1]) if (img.ndim == 3 and img.shape[-1] in (1, 3, 4)) else img.shape[-2:]
             if mask is None:
                 mask = np.zeros((target_h, target_w), dtype=np.float32)
 
@@ -485,7 +526,7 @@ class SegmentationDataset(Dataset):
                 'mask': torch.from_numpy(mask).float(),
                 'valid_mask': torch.from_numpy(valid_mask).float(),
                 'image_id': img_path.stem,
-                'has_object': bool(mask.sum() > 0),
+                'has_object': bool(mask.any() > 0),
                 'meta': meta or {},
             }
         else:
@@ -514,6 +555,10 @@ class SegmentationDataset(Dataset):
             sample['image'] = sample['image'].unsqueeze(0)
         elif sample['image'].ndim == 3 and sample['image'].shape[-1] in (1, 3):
             sample['image'] = sample['image'].permute(2, 0, 1)
+
+        # Match expected in_channels
+        if sample['image'].shape[0] == 1 and self.in_channels == 3:
+            sample['image'] = sample['image'].repeat(3, 1, 1)
 
         if sample['valid_mask'].ndim == 2:
             sample['valid_mask'] = sample['valid_mask'].unsqueeze(0)
