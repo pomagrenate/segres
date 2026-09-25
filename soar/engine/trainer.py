@@ -112,6 +112,10 @@ class BaseTrainer:
             "val_loss": [],
             "iou": [],
             "dice": [],
+            "precision": [],
+            "recall": [],
+            "boundary_iou": [],
+            "cldice": [],
             "lr": [],
         }
 
@@ -526,6 +530,10 @@ class BaseTrainer:
                 self.history["val_loss"].append(val_loss)
                 self.history["iou"].append(metrics.get("iou", 0.0))
                 self.history["dice"].append(metrics.get("dice", 0.0))
+                self.history["precision"].append(metrics.get("precision", 0.0))
+                self.history["recall"].append(metrics.get("recall", 0.0))
+                self.history["boundary_iou"].append(metrics.get("boundary_iou", 0.0))
+                self.history["cldice"].append(metrics.get("cldice", 0.0))
                 self.history["lr"].append(lr_now)
 
                 self._plot_results()
