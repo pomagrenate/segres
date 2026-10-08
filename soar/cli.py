@@ -113,9 +113,15 @@ def parse_args(raw_args: Optional[List[str]] = None):
     train_parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     train_parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     train_parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
-    train_parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda/cpu)")
+    train_parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Training device: cuda, cuda:N, or cpu (default: cuda with an announced CPU fallback)",
+    )
     train_parser.add_argument("--workers", type=int, default=2, help="DataLoader workers")
     train_parser.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Base checkpoint directory")
+    train_parser.add_argument("--log-interval", type=int, default=10, help="Print a metrics summary every N epochs (default: 10)")
     train_parser.add_argument("--val-split", type=float, default=0.1, help="Validation split ratio if dataset lacks explicit val set")
     train_parser.add_argument("--amp", action="store_true", default=True, help="Enable automatic mixed precision")
     train_parser.add_argument("--no-amp", dest="amp", action="store_false", help="Disable automatic mixed precision")
@@ -199,9 +205,10 @@ def train(args):
     print(f"  - Classes:       {num_classes}")
     print(f"  - Epochs:        {args.epochs}")
     print(f"  - Batch Size:    {args.batch_size} (Grad Accum: {args.accumulate_grad_batches})")
-    print(f"  - Device:        {args.device}")
+    print(f"  - Device Req.:   {args.device}")
     print(f"  - Mixed Prec.:   {args.amp}")
     print(f"  - Loss Type:     {args.loss}")
+    print(f"  - Log Interval:  Every {max(1, args.log_interval)} epoch(s)")
     print(f"  - Samples:       {args.samples if args.samples is not None else 'All'}")
     print(f"  - RAM Caching:   {getattr(args, 'cache_ram', False)}")
     print("=" * 70)
@@ -230,6 +237,7 @@ def train(args):
         weight_decay=args.weight_decay,
         device=args.device,
         checkpoint_dir=args.checkpoint_dir,
+        log_interval=args.log_interval,
         val_split=args.val_split,
         num_workers=args.workers,
         use_amp=args.amp,

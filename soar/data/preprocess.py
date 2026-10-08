@@ -3,7 +3,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from typing import Tuple, Optional, Callable, Dict, Any
-import albumentations as A
 
 from .preprocess_config import PreprocessConfig, CanonicalConfig, GeometricConfig, AppearanceConfig
 

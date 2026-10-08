@@ -1,0 +1,3 @@
+[console_scripts]
+segres = soar.cli:main
+soar = soar.cli:main

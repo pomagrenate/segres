@@ -1,4 +1,6 @@
-torch>=2.1
+# Install requirements-cu124.txt first to provide the pinned CUDA-enabled
+# PyTorch runtime. Keeping the PyTorch index separate prevents it from being
+# used for unrelated packages in this file.
 numpy>=1.24,<2.3
 opencv-python-headless>=4.8
 pillow>=10.0
@@ -6,4 +8,5 @@ pandas>=2.0
 matplotlib>=3.7
 tqdm>=4.65
 pyyaml>=6.0
+scipy>=1.7
 astropy>=5.3  # optional: only needed if you read .fits/.fit files

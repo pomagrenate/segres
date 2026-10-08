@@ -1,0 +1,6 @@
+# PyTorch 2.6.0 is the latest official release line that publishes CUDA 12.4
+# wheels. Keep this install separate from requirements.txt so this index is
+# not used to resolve unrelated project dependencies.
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0
+torchvision==0.21.0
